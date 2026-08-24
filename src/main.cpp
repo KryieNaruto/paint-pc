@@ -1,8 +1,18 @@
-// paint-pc 占位入口。窗口 / 输入 / present 由消费者实现（ImGui / GLFW 自备）。
-// 后续接入 dgc_paint_c_api.h：dgcBeginStroke → dgcStrokeTo → dgcEndStroke → dgcRender。
+// paint-pc 消费者入口。
+//
+// 当前为外壳：GLFW 窗口 + OpenGL 清屏 + ImGui 浮层，输入桩记录指针。
+// 下一轮（SDK B1-4 C API 落地后）：
+//   #include "dgc_paint_c_api.h"
+//   dgcBeginStroke → dgcStrokeTo → dgcEndStroke → dgcRender
+//   并把窗口句柄经 dgcSetSurface 传入 SDK。
+
+#include "app.h"
 
 int main() {
-    // TODO: 初始化窗口（GLFW/ImGui），把窗口句柄经 dgcSetSurface 传入 SDK，
-    //       将鼠标 / 数位板事件转成 C API 调用并 present 渲染结果。
+    paint::App app;
+    if (!app.init(1280, 800, "DGCamp Paint - paint-pc")) {
+        return 1; // headless / 无显示环境：优雅退出
+    }
+    app.run();
     return 0;
 }
