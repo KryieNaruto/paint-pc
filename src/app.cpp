@@ -5,7 +5,12 @@
 #include <imgui_impl_glfw.h>
 #include <imgui_impl_opengl3.h>
 
+#include "dgc_paint_c_api.h"
+#include "gl_canvas.h"
+
+#include <cstdint>
 #include <cstdio>
+#include <vector>
 
 namespace paint {
 
@@ -20,35 +25,55 @@ struct App::Impl {
     bool mouseDown = false;
     double lastX = 0.0, lastY = 0.0;
 
-    // 鼠标 / 数位笔按键回调：记录按下 / 抬起，为下一轮转发到 C API 做准备。
+    // SDK C API + 画布贴图（新增）
+    DgcContext* sdk = nullptr;
+    GlCanvas* canvas = nullptr;
+    int canvasW = 1280, canvasH = 800;
+    std::vector<uint8_t> rgba;        // RGBA8, canvasW*canvasH*4
+    double lastReadMs = 0.0;          // 读回耗时
+    bool strokeActive = false;
+
+    // 鼠标 / 数位笔按键回调：按下 / 抬起转发到 C API（dgcBeginStroke / dgcEndStroke）。
     static void OnMouseButton(GLFWwindow* window, int button, int action, int mods) {
         (void)mods;
         auto* impl = static_cast<Impl*>(glfwGetWindowUserPointer(window));
-        if (!impl) return;
+        if (!impl || !impl->sdk) return;
         if (button == GLFW_MOUSE_BUTTON_LEFT) {
-            impl->mouseDown = (action == GLFW_PRESS);
-            if (impl->mouseDown) {
-                glfwGetCursorPos(window, &impl->lastX, &impl->lastY);
-                // TODO(SDK C API 接入后): dgcBeginStroke(ctx, x, y, pressure, tiltX, tiltY);
+            double x, y; glfwGetCursorPos(window, &x, &y);
+            // 越界裁剪（spec §6）：超出画布则丢弃该点，避免负坐标进 SDK。
+            if (x < 0 || y < 0 || x >= impl->canvasW || y >= impl->canvasH) { impl->strokeActive = false; return; }
+            impl->strokeActive = (action == GLFW_PRESS);
+            if (impl->strokeActive) {
+                int rc = dgcBeginStroke(impl->sdk, (float)x, (float)y, 0.5f, 0.f, 0.f);
+                if (rc != 0) std::fprintf(stderr, "[paint-pc] beginStroke: %s\n", dgcGetLastError());
             } else {
-                // TODO(SDK C API 接入后): dgcEndStroke(ctx);
+                int rc = dgcEndStroke(impl->sdk);
+                if (rc != 0) std::fprintf(stderr, "[paint-pc] endStroke: %s\n", dgcGetLastError());
             }
         }
     }
 
-    // 鼠标 / 数位笔移动回调：记录位置，为下一轮转发到 C API 做准备。
+    // 鼠标 / 数位笔移动回调：笔画进行中转发到 C API（dgcStrokeTo）。
     static void OnCursorPos(GLFWwindow* window, double x, double y) {
         auto* impl = static_cast<Impl*>(glfwGetWindowUserPointer(window));
-        if (!impl) return;
-        impl->lastX = x;
-        impl->lastY = y;
-        // TODO(SDK C API 接入后): if (impl->mouseDown) dgcStrokeTo(ctx, x, y, pressure, tiltX, tiltY, 0);
+        if (!impl || !impl->sdk || !impl->strokeActive) return;
+        if (x < 0 || y < 0 || x >= impl->canvasW || y >= impl->canvasH) return;  // 越界丢弃
+        int rc = dgcStrokeTo(impl->sdk, (float)x, (float)y, 0.5f, 0.f, 0.f, 0);
+        if (rc != 0) std::fprintf(stderr, "[paint-pc] strokeTo: %s\n", dgcGetLastError());
     }
 
     static void OnFramebufferSize(GLFWwindow* window, int w, int h) {
-        (void)window;
+        auto* impl = static_cast<Impl*>(glfwGetWindowUserPointer(window));
+        if (!impl) return;
         glViewport(0, 0, w, h);
-        // TODO(SDK C API 接入后): dgcResize(ctx, w, h);
+        impl->width = w; impl->height = h;
+        if (impl->sdk) {
+            int rc = dgcSetOffscreenSurface(impl->sdk, w, h);
+            if (rc != 0) std::fprintf(stderr, "[paint-pc] resize offscreen: %s\n", dgcGetLastError());
+            // 同步画布尺寸与读回缓冲，避免 resize 后 readback 缓冲不匹配。
+            impl->canvasW = w; impl->canvasH = h;
+            impl->rgba.resize((size_t)w * h * 4);
+        }
     }
 };
 
@@ -94,6 +119,20 @@ bool App::init(int width, int height, const char* title) {
     ImGui_ImplGlfw_InitForOpenGL(impl->window, true);
     ImGui_ImplOpenGL3_Init("#version 330");
 
+    // SDK C API 接入：离屏画布 + 清屏 + 读回缓冲 + GL 画布纹理。
+    impl->sdk = dgcCreate();
+    if (!impl->sdk) {
+        std::fprintf(stderr, "[paint-pc] dgcCreate failed\n");
+        shutdown();
+        return false;
+    }
+    int rc = dgcSetOffscreenSurface(impl->sdk, impl->canvasW, impl->canvasH);
+    if (rc != 0) { std::fprintf(stderr, "[paint-pc] offscreen surface: %s\n", dgcGetLastError()); shutdown(); return false; }
+    rc = dgcClear(impl->sdk, 0.96f, 0.95f, 0.91f, 1.0f);
+    if (rc != 0) { std::fprintf(stderr, "[paint-pc] clear: %s\n", dgcGetLastError()); }
+    impl->rgba.assign((size_t)impl->canvasW * impl->canvasH * 4, 255);
+    impl->canvas = new GlCanvas(impl->canvasW, impl->canvasH);
+
     return true;
 }
 
@@ -103,36 +142,49 @@ void App::run() {
     while (!glfwWindowShouldClose(m->window)) {
         glfwPollEvents();
 
-        ImGui_ImplOpenGL3_NewFrame();
-        ImGui_ImplGlfw_NewFrame();
-        ImGui::NewFrame();
-
-        // 画布底色清屏（OpenGL 外壳期；待 B2-1 Vulkan 落地后替换为渲染结果贴图）。
+        // 画布底色 + 读回贴图（必须先于 ImGui，避免全屏 quad 盖住浮层）
         glViewport(0, 0, m->width, m->height);
         glClearColor(m->clearColor[0], m->clearColor[1], m->clearColor[2], m->clearColor[3]);
         glClear(GL_COLOR_BUFFER_BIT);
 
-        // 浮层：状态 + FPS。
+        if (m->sdk) {
+            auto t0 = glfwGetTime();
+            int rc = dgcReadbackPixels(m->sdk, m->rgba.data());   // 检查返回值
+            m->lastReadMs = (glfwGetTime() - t0) * 1000.0;
+            if (rc != 0) {
+                std::fprintf(stderr, "[paint-pc] readback: %s\n", dgcGetLastError());
+            } else if (m->canvas) {
+                m->canvas->upload(m->rgba.data(), m->canvasW, m->canvasH);
+                m->canvas->draw(m->width, m->height);
+            }
+        }
+
+        ImGui_ImplOpenGL3_NewFrame();
+        ImGui_ImplGlfw_NewFrame();
+        ImGui::NewFrame();
+
+        // 浮层：FPS / 帧时 / 读回耗时 / 画布尺寸。
         ImGui::SetNextWindowPos(ImVec2(12, 12), ImGuiCond_Always);
         ImGui::SetNextWindowBgAlpha(0.6f);
-        ImGui::Begin("DGCamp Paint", nullptr,
+        ImGui::Begin("Performance", nullptr,
                      ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
                          ImGuiWindowFlags_AlwaysAutoResize);
-        ImGui::Text("paint-pc 外壳 · SDK C API 未接入");
         ImGui::Text("FPS: %.1f", ImGui::GetIO().Framerate);
-        ImGui::Text("指针: (%.0f, %.0f) %s", m->lastX, m->lastY,
-                    m->mouseDown ? "按下" : "抬起");
+        ImGui::Text("Frame: %.2f ms", 1000.0 / (ImGui::GetIO().Framerate > 0 ? ImGui::GetIO().Framerate : 1.0));
+        ImGui::Text("Readback: %.2f ms", m->lastReadMs);
+        ImGui::Text("Canvas: %dx%d", m->canvasW, m->canvasH);
         ImGui::End();
 
         ImGui::Render();
         ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
-
         glfwSwapBuffers(m->window);
     }
 }
 
 void App::shutdown() {
     if (!m) return;
+    delete m->canvas; m->canvas = nullptr;
+    if (m->sdk) { dgcDestroy(m->sdk); m->sdk = nullptr; }
     if (m->window) {
         ImGui_ImplOpenGL3_Shutdown();
         ImGui_ImplGlfw_Shutdown();
