@@ -52,6 +52,7 @@ add_executable(paint_pc
     src/main.cpp
     src/app.cpp
     src/gl_canvas.cpp
+    src/headless.cpp
 )
 target_include_directories(paint_pc PRIVATE src)
 
