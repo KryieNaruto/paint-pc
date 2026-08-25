@@ -1,3 +1,6 @@
 build/
 # ImGui 运行时生成的窗口布局配置（每轮运行都会变，不入库）
 imgui.ini
+
+# clangd 缓存
+.cache/
