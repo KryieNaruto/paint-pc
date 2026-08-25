@@ -51,6 +51,7 @@ target_compile_features(paint_imgui PUBLIC cxx_std_17)
 add_executable(paint_pc
     src/main.cpp
     src/app.cpp
+    src/gl_canvas.cpp
 )
 target_include_directories(paint_pc PRIVATE src)
 
