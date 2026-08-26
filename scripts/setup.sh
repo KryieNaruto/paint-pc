@@ -428,6 +428,13 @@ main() {
   [ "$mode" = "test" ] && PY_TEST_NEEDED=1 || PY_TEST_NEEDED=0
   export PY_TEST_NEEDED
 
+  if [ "$mode" != "check" ]; then
+    # 先同步 submodule + 拉取三方库（fetch-deps 导出 DGCPAIN_DEPS_ROOT），再探测。
+    # 否则探测在 fetch 之前跑，Vulkan/shaderc 报 MISS → HARD_MISS 拦截，deps 没机会被拉。
+    sync_submodule "$root"
+    fetch_deps "$root"
+  fi
+
   probe_all
   print_check
 
@@ -442,8 +449,6 @@ main() {
     exit 1
   fi
 
-  sync_submodule "$root"
-  fetch_deps "$root"
   build_pc "$root"
 
   if [ "$mode" = "test" ]; then
