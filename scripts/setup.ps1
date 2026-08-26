@@ -94,8 +94,11 @@ function Get-VsGeneratorName {
     $major = ($Version -split '\.')[0]
     switch ($major) {
         "16" { return "Visual Studio 16 2019" }
+        "2019" { return "Visual Studio 16 2019" }
         "17" { return "Visual Studio 17 2022" }
+        "2022" { return "Visual Studio 17 2022" }
         "18" { return "Visual Studio 18 2026" }
+        "2026" { return "Visual Studio 18 2026" }
         default { return "" }
     }
 }

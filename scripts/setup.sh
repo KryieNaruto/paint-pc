@@ -522,7 +522,7 @@ main() {
   fi
 
   if [ "$mode" = "sln" ]; then
-    build_pc_sln "$root"
+    build_pc_sln "$root" || { err "生成 VS 解决方案失败（build/msvc）"; exit 1; }
   else
     build_pc "$root"
   fi
