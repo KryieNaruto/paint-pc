@@ -116,13 +116,23 @@ find_vswhere() {
 }
 
 # 用 vswhere 查含 VC 工具集的 VS 安装路径（输出首行，去 CRLF，转 MSYS 路径）。
-# 先带 -requires 精确匹配 VC 工具集；找不到则降级不带 -requires（组件名变体/未装工作负载
-# 时仍能定位 VS 安装目录，让脚本报更精确的「缺组件」而非「没找到 VS」）。
+# 关键：必须带 -all —— 否则 vswhere 默认隐藏 Insiders/预览版（用户 VS 装在
+# Microsoft Visual Studio\18\Insiders 就是这种），会查不到。加 -all 后包含所有版本。
+# 顺序：带 -requires 精确匹配 → 降级不带 -requires（组件变体）→ 无 vswhere 时直接扫
+# C:\Program Files\Microsoft Visual Studio\*\*\ 已知目录（找含 VC 工具集的安装）。
 find_vs() {
-  local vswhere vs vs_msys
-  vswhere="$(find_vswhere)" || return 1
-  vs="$("$vswhere" -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath 2>/dev/null | tr -d '\r' | head -n1)"
-  [ -z "$vs" ] && vs="$("$vswhere" -latest -products '*' -property installationPath 2>/dev/null | tr -d '\r' | head -n1)"
+  local vswhere="" vs="" vs_msys=""
+  vswhere="$(find_vswhere)" || vswhere=""
+  if [ -n "$vswhere" ]; then
+    vs="$("$vswhere" -all -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath 2>/dev/null | tr -d '\r' | head -n1)"
+    [ -z "$vs" ] && vs="$("$vswhere" -all -latest -products '*' -property installationPath 2>/dev/null | tr -d '\r' | head -n1)"
+  fi
+  # 无 vswhere 或 vswhere 查不到 → 直接扫 VS 安装目录（兼容 Insiders/自定义布局）。
+  # 注意：VS 可装在 <root>/18/Insiders/VC/...（深层次），不能限 -maxdepth；用 find 全扫后
+  # 取第一个含 VC/Tools/MSVC 的路径，向上裁剪出 VS 安装根。
+  if [ -z "$vs" ]; then
+    vs="$(find "/c/Program Files/Microsoft Visual Studio" -type d -path '*VC/Tools/MSVC' 2>/dev/null | head -n1 | sed 's#/VC/Tools/MSVC$##')"
+  fi
   [ -z "$vs" ] && return 1
   vs_msys="$(msys_from_win "$vs")"
   if [ -d "$vs_msys" ]; then
@@ -132,20 +142,31 @@ find_vs() {
 }
 
 # 找 VC 工具集里的 cl.exe（Hostx64\x64）。
+# 优先经 find_vs 定位；找不到时直接全盘扫 VS 目录下的 cl.exe（最后一搏）。
 find_cl() {
-  local vs cl
-  vs="$(find_vs)" || return 1
-  cl="$(find "$vs/VC/Tools/MSVC" -path '*Hostx64/x64/cl.exe' -type f 2>/dev/null | head -n1)"
+  local vs="" cl=""
+  vs="$(find_vs 2>/dev/null || true)"
+  if [ -n "$vs" ]; then
+    cl="$(find "$vs/VC/Tools/MSVC" -path '*Hostx64/x64/cl.exe' -type f 2>/dev/null | head -n1)"
+  fi
+  if [ -z "$cl" ]; then
+    cl="$(find "/c/Program Files/Microsoft Visual Studio" -path '*VC/Tools/MSVC/*/Hostx64/x64/cl.exe' -type f 2>/dev/null | head -n1)"
+  fi
   [ -n "$cl" ] && { printf '%s' "$cl"; return 0; }
   return 1
 }
 
 # 找 vcvars64.bat（构建时经 cmd 自动进入 MSVC 环境）。
 find_vcvars() {
-  local vs vc
-  vs="$(find_vs)" || return 1
-  vc="$vs/VC/Auxiliary/Build/vcvars64.bat"
-  [ -f "$vc" ] && { printf '%s' "$vc"; return 0; }
+  local vs="" vc=""
+  vs="$(find_vs 2>/dev/null || true)"
+  if [ -n "$vs" ]; then
+    vc="$vs/VC/Auxiliary/Build/vcvars64.bat"
+    [ -f "$vc" ] && { printf '%s' "$vc"; return 0; }
+  fi
+  # fallback：直接扫 VS 目录下的 vcvars64.bat（兼容 Insiders/自定义布局）。
+  vc="$(find "/c/Program Files/Microsoft Visual Studio" -path '*VC/Auxiliary/Build/vcvars64.bat' -type f 2>/dev/null | head -n1)"
+  [ -n "$vc" ] && { printf '%s' "$vc"; return 0; }
   return 1
 }
 
