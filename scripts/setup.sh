@@ -311,10 +311,14 @@ sync_submodule() {
   git -C "$root" submodule update --init --recursive
 }
 
-# 生成 MSVC 构建批处理，返回供 `cmd //c` 调用的相对路径参数。
-# 关键：cmd 只接收「无空格、无引号」的相对路径 —— Git Bash/MSYS2 会把参数内 `"` 重转义
-# 为 `\"`，而 cmd.exe 不认 `\"` 转义，会把 `\"C:\...bat\"` 当命令名报
-# "'\"...\"' 不是内部或外部命令"。引号只出现在 bat 文件内容里（文件内字面），不经参数传递。
+# 生成 MSVC 构建批处理，返回供 `cmd //c` 调用的参数。
+# 关键不变量：cmd 参数必须「无斜杠、无空格、无引号」（裸文件名 `_setup_msvc.bat`）。
+#   - 无引号：Git Bash/MSYS2 会把参数内 `"` 重转义为 `\"`，而 cmd.exe 不认 `\"`，
+#     会把 `\"C:\...bat\"` 当命令名报 "'\"...\"' 不是内部或外部命令"。
+#   - 无斜杠：含 `/` 的相对路径参数会被 MSYS2 做路径转换，且 cmd 对正斜杠批处理路径
+#     解析把 `/` 前段当命令名 → 真机报 `'build' 不是内部或外部命令`。
+# 引号只出现在 bat 文件内容里（文件内字面），不经参数传递；斜杠通过「只返回裸文件名
+# + 调用方把 cwd 切到 build/」消除。
 make_msvc_build_bat() {
   local root="$1" vcvars="$2" vsdk_bin="$3"
   local root_win vc_win
@@ -337,7 +341,7 @@ if errorlevel 1 exit /b %errorlevel%
 cmake --build build -j
 exit /b %errorlevel%
 EOF
-  printf 'build/_setup_msvc.bat'
+  printf '_setup_msvc.bat'
 }
 
 build_pc() {
@@ -360,9 +364,10 @@ build_pc() {
       local cmd_arg
       # VULKAN_SDK 未设时传空串 → bat 不写 /Bin 脏路径（探测阶段已保证 VULKAN_SDK 已设）。
       cmd_arg="$(make_msvc_build_bat "$root" "$vcvars" "${VULKAN_SDK:+${VULKAN_SDK}/Bin}")"
-      # 显式 cd 到仓库根再调 cmd —— bat 是相对路径，必须保证 cmd 的 cwd == $root。
-      # （原实现把 `cd /d "$root_win"` 放 cmd 串内不依赖调用方 cwd；本实现等价恢复该性质。）
-      if ! ( cd "$root" && cmd //c "$cmd_arg" ); then
+      # bat 是裸文件名（无斜杠）→ MSYS2 无路径可转换、cmd 无斜杠可解析。
+      # cwd 先切到 build/，cmd 从当前目录（= build/）找到 _setup_msvc.bat；
+      # bat 内部 `cd /d "$root_win"` 会切回仓库根执行 cmake，不依赖起始 cwd。
+      if ! ( cd "$root/build" && cmd //c "$cmd_arg" ); then
         return 1
       fi
       return 0
