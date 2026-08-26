@@ -23,7 +23,9 @@ ok()   { printf '[OK]   %s\n' "$*"; }
 # ---------- 基础工具 ----------
 has() { command -v "$1" >/dev/null 2>&1; }
 
-is_linux() { [ "$(uname -s)" = "Linux" ]; }
+# Linux 判定：uname -s = Linux 且非 MSYS/Git Bash（MSYS2 下 uname 可能报 MINGW/MSYS，
+# 极端情况 uname 报 Linux 但 MSYSTEM 已设也应视为 Windows 走 MSVC 路径）。
+is_linux() { [ -z "${MSYSTEM:-}" ] && [ -z "${MINGW:-}" ] && [ "$(uname -s)" = "Linux" ]; }
 is_windows_gitbash() { [ -n "${MSYSTEM:-}" ] || [ -n "${MINGW:-}" ]; }
 
 extract_version() {
@@ -137,10 +139,12 @@ probe_compiler() {
 
   # Windows（Git Bash / MSYS2 / 原生 cmd 内 bash）：MSVC —— 自动定位 VS2026，不要求 cl 在 PATH。
   # 假定用户已装 VS2026（含「使用 C++ 的桌面开发」工作负载），脚本用 vswhere 自动定位。
+  # ⚠ 注意：find_* 在未找到时 return 1，命令替换返回非零在 set -e 下会静默退出，
+  #   必须 `|| true` 兜底（否则脚本在 print_check 前就无输出退出）。
   local cl vs vc
-  cl="$(find_cl 2>/dev/null)"
-  vs="$(find_vs 2>/dev/null)"
-  vc="$(find_vcvars 2>/dev/null)"
+  cl="$(find_cl 2>/dev/null || true)"
+  vs="$(find_vs 2>/dev/null || true)"
+  vc="$(find_vcvars 2>/dev/null || true)"
   if [ -n "$cl" ] && [ -n "$vc" ]; then
     record "C++ 编译器 (MSVC)" "硬" "OK" "MSVC cl.exe @ $(dirname "$cl")（VS @ $vs，自动定位，构建时经 vcvars64 进入 MSVC 环境）"
   elif [ -n "$vs" ]; then
@@ -273,7 +277,7 @@ build_pc() {
 
   if ! is_linux; then
     # Windows：自动进入 MSVC 环境（vcvars64），cl.exe / ninja 才可用。全自动无人值守。
-    vcvars="$(find_vcvars)"
+    vcvars="$(find_vcvars || true)"
     if [ -n "$vcvars" ]; then
       info "进入 MSVC 环境（vcvars64）…"
       # 用 cmd /c 包裹：先 call vcvars64.bat 注入 MSVC 环境，再执行 cmake 配置 + 构建。
