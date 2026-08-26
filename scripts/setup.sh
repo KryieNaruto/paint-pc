@@ -116,16 +116,16 @@ find_vswhere() {
 }
 
 # 用 vswhere 查含 VC 工具集的 VS 安装路径（输出首行，去 CRLF，转 MSYS 路径）。
-# 关键：必须带 -all —— 否则 vswhere 默认隐藏 Insiders/预览版（用户 VS 装在
-# Microsoft Visual Studio\18\Insiders 就是这种），会查不到。加 -all 后包含所有版本。
+# 关键：必须带 -all -prerelease —— -all 包含所有版本，-prerelease 纳入 Insiders/预览版；
+# 缺 -prerelease 会过滤掉 2026 Insiders（用户 VS 装在 Microsoft Visual Studio\18\Insiders）。
 # 顺序：带 -requires 精确匹配 → 降级不带 -requires（组件变体）→ 无 vswhere 时直接扫
 # C:\Program Files\Microsoft Visual Studio\*\*\ 已知目录（找含 VC 工具集的安装）。
 find_vs() {
   local vswhere="" vs="" vs_msys=""
   vswhere="$(find_vswhere)" || vswhere=""
   if [ -n "$vswhere" ]; then
-    vs="$("$vswhere" -all -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath 2>/dev/null | tr -d '\r' | head -n1)"
-    [ -z "$vs" ] && vs="$("$vswhere" -all -latest -products '*' -property installationPath 2>/dev/null | tr -d '\r' | head -n1)"
+    vs="$("$vswhere" -all -prerelease -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath 2>/dev/null | tr -d '\r' | head -n1)"
+    [ -z "$vs" ] && vs="$("$vswhere" -all -prerelease -latest -products '*' -property installationPath 2>/dev/null | tr -d '\r' | head -n1)"
   fi
   # 无 vswhere 或 vswhere 查不到 → 直接扫 VS 安装目录（兼容 Insiders/自定义布局）。
   # 注意：VS 可装在 <root>/18/Insiders/VC/...（深层次），不能限 -maxdepth；用 find 全扫后
