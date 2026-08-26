@@ -13,9 +13,22 @@ include(FetchContent)
 
 set(PC_GLFW_TAG "3.3.10")
 set(PC_IMGUI_TAG "v1.90.9")
+
+# 国内镜像加速 FetchContent（可选）：PC_FETCH_MIRROR=https://ghproxy.com/ 时替换 GitHub 前缀。
+# PC_GLFW_TAG / PC_IMGUI_TAG 已在上方定义，此处不重复 set。
+set(PC_FETCH_MIRROR "$ENV{PC_FETCH_MIRROR}" CACHE STRING "GitHub 镜像前缀（国内加速）")
+
+if(PC_FETCH_MIRROR)
+  set(PC_GLFW_REPO "${PC_FETCH_MIRROR}https://github.com/glfw/glfw.git")
+  set(PC_IMGUI_REPO "${PC_FETCH_MIRROR}https://github.com/ocornut/imgui.git")
+else()
+  set(PC_GLFW_REPO "https://github.com/glfw/glfw.git")
+  set(PC_IMGUI_REPO "https://github.com/ocornut/imgui.git")
+endif()
+
 FetchContent_Declare(
     glfw
-    GIT_REPOSITORY https://github.com/glfw/glfw.git
+    GIT_REPOSITORY ${PC_GLFW_REPO}
     GIT_TAG ${PC_GLFW_TAG}
     GIT_SHALLOW TRUE
 )
@@ -25,7 +38,7 @@ set(GLFW_BUILD_DOCS     OFF CACHE BOOL "" FORCE)
 set(GLFW_INSTALL        OFF CACHE BOOL "" FORCE)
 FetchContent_Declare(
     imgui
-    GIT_REPOSITORY https://github.com/ocornut/imgui.git
+    GIT_REPOSITORY ${PC_IMGUI_REPO}
     GIT_TAG ${PC_IMGUI_TAG}
     GIT_SHALLOW TRUE
 )
