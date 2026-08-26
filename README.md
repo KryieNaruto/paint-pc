@@ -32,6 +32,18 @@ cmake --build build
 - 首次构建会 `FetchContent` 从 GitHub 拉 **GLFW 3.3.10** 与 **ImGui v1.90.9**（网络需要）。
 - 需要 host 工具链（cmake ≥ 3.22 + ninja + g++/clang + X11/OpenGL dev 头）。SDK 环境搭建见 [paintDemo docs/env/env-setup.md](https://github.com/KryieNaruto/paintDemo/blob/main/docs/env/env-setup.md)。
 
+### 生成 VS 解决方案（Windows 开发，--sln）
+
+在 Windows（VS2019/2022/2026）下可用 CMake 的 Visual Studio 生成器产出 `.sln`，便于在 VS 内改码 → F5 直接开发：
+
+```bash
+scripts/setup.sh --sln          # Git Bash / WSL
+# 或 PowerShell：
+.\scripts\setup.ps1 -Sln
+```
+
+会在独立目录 `build/msvc/` 生成 `paint_pc.sln` 并构建 **Debug** 配置验证链接；打开 sln 后选择 Debug 配置即可开发。`--sln` 仅支持 Windows（VS 生成器需 MSVC 工具链），Linux 请用默认 Ninja 构建。
+
 ## 运行
 
 ```bash
