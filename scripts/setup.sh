@@ -77,9 +77,52 @@ probe_ninja() {
   record "Ninja" "硬" "OK" "ninja $(ninja --version 2>/dev/null | head -n1 || true)"
 }
 
+# ── Windows/VS 定位辅助（全自动无人值守；假定用户已装 VS2026）──────────────
+# vswhere 是 VS 自带定位器，固定路径在 VS Installer 目录；Git Bash 里不在 PATH。
+find_vswhere() {
+  local candidates=(
+    "${LOCALAPPDATA:-}/Microsoft/VisualStudio/Installer/vswhere.exe"
+    "/c/Program Files (x86)/Microsoft Visual Studio/Installer/vswhere.exe"
+    "/c/Program Files/Microsoft Visual Studio/Installer/vswhere.exe"
+  )
+  local p
+  for p in "${candidates[@]}"; do
+    [ -f "$p" ] && { printf '%s' "$p"; return 0; }
+  done
+  has vswhere && { command -v vswhere; return 0; }
+  return 1
+}
+
+# 用 vswhere 查含 VC 工具集的 VS 安装路径（输出首行，去 CRLF）。
+find_vs() {
+  local vswhere vs
+  vswhere="$(find_vswhere)" || return 1
+  vs="$("$vswhere" -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath 2>/dev/null | tr -d '\r' | head -n1)"
+  [ -n "$vs" ] && [ -d "$vs" ] && { printf '%s' "$vs"; return 0; }
+  return 1
+}
+
+# 找 VC 工具集里的 cl.exe（Hostx64\x64）。
+find_cl() {
+  local vs cl
+  vs="$(find_vs)" || return 1
+  cl="$(find "$vs/VC/Tools/MSVC" -path '*Hostx64/x64/cl.exe' -type f 2>/dev/null | head -n1)"
+  [ -n "$cl" ] && { printf '%s' "$cl"; return 0; }
+  return 1
+}
+
+# 找 vcvars64.bat（构建时经 cmd 自动进入 MSVC 环境）。
+find_vcvars() {
+  local vs vc
+  vs="$(find_vs)" || return 1
+  vc="$vs/VC/Auxiliary/Build/vcvars64.bat"
+  [ -f "$vc" ] && { printf '%s' "$vc"; return 0; }
+  return 1
+}
+
 probe_compiler() {
-  # Linux/WSL 用 g++（GCC≥11）；Git Bash 下 MSVC 由 VS 开发者命令行提供，另测。
-  if is_linux || [ -z "${MSYSTEM:-}" ]; then
+  if is_linux; then
+    # Linux/WSL：g++（GCC≥11）。
     local v vn
     if ! has g++; then
       record "C++ 编译器 (g++)" "硬" "MISS(硬)" "未安装 g++（编译必败）"; HARD_MISS=$((HARD_MISS+1)); return
@@ -89,12 +132,21 @@ probe_compiler() {
       if ver_ge "$vn" "11"; then record "C++ 编译器 (g++)" "硬" "OK" "g++ $vn（GCC ≥ 11）"
       else record "C++ 编译器 (g++)" "硬" "MISS(硬)" "g++ $vn 过旧（需 GCC ≥ 11）"; HARD_MISS=$((HARD_MISS+1)); fi
     else record "C++ 编译器 (g++)" "硬" "OK" "已安装但版本无法确认（请手动确认 ≥ 11）"; fi
+    return
+  fi
+
+  # Windows（Git Bash / MSYS2 / 原生 cmd 内 bash）：MSVC —— 自动定位 VS2026，不要求 cl 在 PATH。
+  # 假定用户已装 VS2026（含「使用 C++ 的桌面开发」工作负载），脚本用 vswhere 自动定位。
+  local cl vs vc
+  cl="$(find_cl 2>/dev/null)"
+  vs="$(find_vs 2>/dev/null)"
+  vc="$(find_vcvars 2>/dev/null)"
+  if [ -n "$cl" ] && [ -n "$vc" ]; then
+    record "C++ 编译器 (MSVC)" "硬" "OK" "MSVC cl.exe @ $(dirname "$cl")（VS @ $vs，自动定位，构建时经 vcvars64 进入 MSVC 环境）"
+  elif [ -n "$vs" ]; then
+    record "C++ 编译器 (MSVC)" "硬" "MISS(硬)" "找到 VS @ $vs 但缺 cl.exe（未装「使用 C++ 的桌面开发」工作负载）"; HARD_MISS=$((HARD_MISS+1))
   else
-    # Git Bash：MSVC cl.exe 需在 VS 开发者命令行内。用 vswhere 探测 VS 安装。
-    if ! has cl && ! has vswhere; then
-      record "C++ 编译器 (MSVC)" "硬" "MISS(硬)" "未找到 cl.exe / vswhere（需 VS2026 + 「使用 C++ 的桌面开发」）"; HARD_MISS=$((HARD_MISS+1)); return
-    fi
-    record "C++ 编译器 (MSVC)" "硬" "OK" "MSVC（请确认在 VS 开发者命令行内运行，或经 setup.ps1）"
+    record "C++ 编译器 (MSVC)" "硬" "MISS(硬)" "未找到 VS2026（需安装 VS2026 + 「使用 C++ 的桌面开发」；本脚本全自动无人值守，需 VS 已装）"; HARD_MISS=$((HARD_MISS+1))
   fi
 }
 
@@ -122,11 +174,22 @@ probe_vulkan() {
 }
 
 probe_python() {
-  # smoke.sh 的滤波感知解码断言依赖 python3（测试门实际依赖）。
-  if ! has python3; then
-    record "python3" "硬" "MISS(硬)" "未安装（--test 的 tests/smoke.sh 依赖 python3 解码 PNG）"; HARD_MISS=$((HARD_MISS+1)); return
+  # 构建 paint_pc 不需要 python；仅 --test 的 smoke.sh 依赖 python3 解码 PNG。
+  # 默认/开发模式：python 缺失仅警告（软）；--test 模式：缺失才硬性失败。
+  # 多候选探测：python3 / python / py（Windows launcher）。
+  local pycmd="" pyver=""
+  if has python3; then pycmd=python3
+  elif has python; then pycmd=python
+  elif has py; then pycmd="py -3"
   fi
-  record "python3" "硬" "OK" "python3 $(python3 --version 2>/dev/null | head -n1 || true)"
+  if [ -n "$pycmd" ]; then
+    pyver="$($pycmd --version 2>/dev/null | head -n1 || echo "$pycmd")"
+    record "python3" "硬" "OK" "$pyver（$pycmd）"
+  elif [ "$PY_TEST_NEEDED" = "1" ]; then
+    record "python3" "硬" "MISS(硬)" "未安装（--test 的 tests/smoke.sh 依赖 python3 解码 PNG；可装 python.org 或 winget install Python.Python.3.12）"; HARD_MISS=$((HARD_MISS+1))
+  else
+    record "python3" "软" "WARN(软)" "未安装（仅 --test 需要；默认/开发模式不阻断）"; SOFT_MISS=$((SOFT_MISS+1))
+  fi
 }
 
 probe_git() {
@@ -164,6 +227,7 @@ print_guidance() {
   info "请按 docs/env/env-setup.md（SDK）与 README 手动补缺："
   info "  - Linux:  sudo apt install build-essential cmake ninja-build libvulkan-dev python3"
   info "  - Windows: VS2026 + 「使用 C++ 的桌面开发」+「C++ CMake tools」；LunarG Vulkan SDK（https://vulkan.lunarg.com/）设 \$env:VULKAN_SDK；git"
+  info "  - 脚本在 Windows 下自动定位 VS2026（vswhere）并经 vcvars64 进入 MSVC 环境，无需 cl 在 PATH。"
   info "  - 也可用同仓库 scripts/setup.ps1（Windows PowerShell 原生）。"
 }
 
@@ -179,7 +243,11 @@ print_help() {
   --test   探测 + 构建 + 跑测试门 tests/smoke.sh（headless 离屏 PNG 真实笔迹断言）
   --help   打印本帮助
 
-依赖: CMake≥3.22 / Ninja / C++ 编译器（g++≥11 或 MSVC）/ Vulkan（真实后端）/ python3（smoke）/ git。
+无人值守: 假定 VS2026（含「使用 C++ 的桌面开发」）已装；Windows 下自动用 vswhere 定位
+  VS 并经 vcvars64 进入 MSVC 环境构建，不要求 cl 在 PATH。python 在默认/开发模式为软依赖，
+  仅 --test 需要（smoke.sh 解码 PNG）。真缺硬依赖（如未装 VS）时给出指引并非零退出。
+
+依赖: CMake≥3.22 / Ninja / C++ 编译器（g++≥11 或 MSVC）/ Vulkan（真实后端）/ python3（--test）/ git。
 口径来源: SDK docs/env/env-setup.md。
 EOF
 }
@@ -194,12 +262,37 @@ sync_submodule() {
 build_pc() {
   local root="$1"
   info "构建 paint_pc…"
-  # 与 tests/smoke.sh 一致：DGCPAIN_DEPS_ROOT / PC_X11_DEPS_ROOT 可覆盖。
+  # 与 tests/smoke.sh 一致：DGCPAIN_DEPS_ROOT / PC_X11_DEPS_ROOT 可覆盖（Linux）。
   local deps="${DGCPAIN_DEPS_ROOT:-}"
   local x11="${PC_X11_DEPS_ROOT:-}"
   local extra=()
   [ -n "$deps" ] && extra+=(-DDGCPAIN_DEPS_ROOT="$deps")
   [ -n "$x11" ] && extra+=( -DCMAKE_PREFIX_PATH="$x11" -DCMAKE_C_FLAGS="-I$x11/include" -DCMAKE_CXX_FLAGS="-I$x11/include")
+
+  local vcvars
+
+  if ! is_linux; then
+    # Windows：自动进入 MSVC 环境（vcvars64），cl.exe / ninja 才可用。全自动无人值守。
+    vcvars="$(find_vcvars)"
+    if [ -n "$vcvars" ]; then
+      info "进入 MSVC 环境（vcvars64）…"
+      # 用 cmd /c 包裹：先 call vcvars64.bat 注入 MSVC 环境，再执行 cmake 配置 + 构建。
+      # VULKAN_SDK 的 Bin 需在 PATH（vulkan-1.lib 链接）。工作目录切到仓库根。
+      local root_win vc_win vsdk_bin
+      root_win="$(cygpath -w "$root")"
+      vc_win="$(cygpath -w "$vcvars")"
+      vsdk_bin="${VULKAN_SDK:-}/Bin"
+      cmd //c "call \"$vc_win\" && set PATH=$vsdk_bin;%PATH% && cd /d \"$root_win\" && cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DDGCPAIN_BUILD_TESTS=OFF -DDGCPAIN_BUILD_CLI=OFF && cmake --build build -j"
+      local rc=$?
+      [ $rc -ne 0 ] && return $rc
+      return 0
+    fi
+    # 探测阶段应已拦截（MSVC 缺则 HARD_MISS），这里兜底报错。
+    err "未找到 vcvars64.bat，无法进入 MSVC 环境"
+    return 1
+  fi
+
+  # Linux：直接 cmake（g++ + Ninja）。
   cmake -B "$root/build" -S "$root" -DCMAKE_BUILD_TYPE=Debug \
     -DDGCPAIN_BUILD_TESTS=OFF -DDGCPAIN_BUILD_CLI=OFF "${extra[@]}"
   cmake --build "$root/build" -j
@@ -227,6 +320,10 @@ main() {
   local root
   root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
+  # --test 模式：python 升级为硬依赖（smoke.sh 解码 PNG 需要）。
+  [ "$mode" = "test" ] && PY_TEST_NEEDED=1 || PY_TEST_NEEDED=0
+  export PY_TEST_NEEDED
+
   probe_all
   print_check
 
@@ -237,7 +334,7 @@ main() {
 
   if [ "$HARD_MISS" -gt 0 ]; then
     print_guidance
-    err "硬依赖缺失 $HARD_MISS 项。本脚本不静默安装（vs/apt 需交互），请按指引补缺后重跑。"
+    err "硬依赖缺失 $HARD_MISS 项。脚本假定 VS2026 / 编译工具已装（Windows 用 MSVC 自动定位、Linux 用 g++）；对真缺项请按指引补装后重跑（无人值守，不做静默安装）。"
     exit 1
   fi
 
