@@ -6,6 +6,7 @@
 #   scripts/setup.sh            默认（开发）模式：探测 + 补缺指引 + 拉 submodule + 构建
 #   scripts/setup.sh --check    只探测不安装，输出缺项清单
 #   scripts/setup.sh --test     探测 + 构建 + 跑测试门（tests/smoke.sh）
+#   scripts/setup.sh --sln      生成 VS 解决方案 build/msvc/paint_pc.sln 并构建 Debug（仅 Windows）
 #   scripts/setup.sh --help     打印用法
 #
 # 仓库内自包含：clone paint-pc 后在此仓库内运行即可（SDK 为 submodule）。
@@ -170,6 +171,46 @@ find_vcvars() {
   return 1
 }
 
+# ── VS 版本 / CMake 生成器推导（--sln 模式专用）────────────────────────────
+# 从 VS 安装路径提取版本段（版本段在 SKU 上一级）：
+#   .../Microsoft Visual Studio/18/Insiders → 18
+#   .../Microsoft Visual Studio/2022/Community → 2022
+# 注意不能 basename "$vs"（那会得到 Insiders/Community）。
+vs_version_from_path() {
+  local p="$1"
+  printf '%s' "$(basename "$(dirname "$p")")"
+}
+
+# 定位 VS 的 installationVersion（与 find_vs 同参数：-all -prerelease -latest），
+# 失败退回安装路径版本段（VS2026=18 / VS2022=2022）。
+find_vs_version() {
+  local vswhere="" ver="" vs=""
+  vswhere="$(find_vswhere || true)"
+  if [ -n "$vswhere" ]; then
+    ver="$("$vswhere" -all -prerelease -latest -products '*' \
+        -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 \
+        -property installationVersion 2>/dev/null | tr -d '\r' | head -n1)"
+    [ -z "$ver" ] && ver="$("$vswhere" -all -prerelease -latest -products '*' \
+        -property installationVersion 2>/dev/null | tr -d '\r' | head -n1)"
+    [ -n "$ver" ] && { printf '%s' "$ver"; return 0; }
+  fi
+  vs="$(find_vs 2>/dev/null || true)"        # 兜底：路径版本段（VS2026=18 / VS2022=2022）
+  [ -n "$vs" ] && { printf '%s' "$(vs_version_from_path "$vs")"; return 0; }
+  return 1
+}
+
+# 版本/年份 → CMake 生成器名（不支持 VS2017 及更早 / 空串 → 非零失败）。
+vs_generator_name() {
+  local v="$1" major
+  major="${v%%.*}"
+  case "$major" in
+    16|2019) echo "Visual Studio 16 2019" ;;
+    17|2022) echo "Visual Studio 17 2022" ;;
+    18|2026) echo "Visual Studio 18 2026" ;;
+    *) return 1 ;;
+  esac
+}
+
 probe_compiler() {
   if is_linux; then
     # Linux/WSL：g++（GCC≥11）。
@@ -285,7 +326,7 @@ print_guidance() {
 
 print_help() {
   cat <<'EOF'
-用法: scripts/setup.sh [--check|--test|--help]
+用法: scripts/setup.sh [--check|--test|--sln|--help]
 
   一键搭建 paint-pc 开发/测试环境（仓库内自包含）。
 
@@ -293,6 +334,7 @@ print_help() {
   （默认） 探测 + 补缺指引 + 拉 SDK submodule + 构建 paint_pc
   --check  只探测不安装，输出缺项清单；硬依赖缺失时非零退出
   --test   探测 + 构建 + 跑测试门 tests/smoke.sh（headless 离屏 PNG 真实笔迹断言）
+  --sln    生成 VS 解决方案 build/msvc/paint_pc.sln 并构建 Debug 验证链接（仅 Windows，需 VS2019/2022/2026）
   --help   打印本帮助
 
 无人值守: 假定 VS2026（含「使用 C++ 的桌面开发」）已装；Windows 下自动用 vswhere 定位
@@ -402,6 +444,28 @@ build_pc() {
   cmake --build "$root/build" -j
 }
 
+# --sln 模式：用 CMake Visual Studio 生成器在独立目录 build/msvc/ 生成 paint_pc.sln，
+# 并构建 Debug 配置验证链接（VS 内改码 → F5 直接开发）。
+build_pc_sln() {
+  local root="$1" vs="" vs_win="" ver="" gen="" deps="${DGCPAIN_DEPS_ROOT:-}"
+  vs="$(find_vs || true)"
+  [ -z "$vs" ] && { err "未找到 VS 安装（--sln 需要 VS2019/2022/2026）"; return 1; }
+  vs_win="$(cygpath -w "$vs" 2>/dev/null || printf '%s' "$vs")"
+  ver="$(find_vs_version || true)"
+  gen="$(vs_generator_name "${ver:-}" || true)"
+  [ -z "$gen" ] && { err "无法从 VS 版本『${ver:-未知}』推导 CMake 生成器（支持 VS2019/2022/2026）"; return 1; }
+  info "生成 VS 解决方案：${gen}（实例：$vs）…"
+  local extra=()
+  [ -n "$deps" ] && extra+=(-DDGCPAIN_DEPS_ROOT="$deps")
+  cmake -S "$root" -B "$root/build/msvc" -G "$gen" -A x64 \
+    -DCMAKE_GENERATOR_INSTANCE="$vs_win" \
+    -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreadedDLL \
+    -DDGCPAIN_BUILD_TESTS=OFF -DDGCPAIN_BUILD_CLI=OFF "${extra[@]}"
+  info "构建 Debug 配置验证链接…"
+  cmake --build "$root/build/msvc" --config Debug -j
+  info "已生成：build/msvc/paint_pc.sln（VS 打开，选 Debug 配置开发）"
+}
+
 run_test() {
   local root="$1"
   info "跑测试门 tests/smoke.sh…"
@@ -411,11 +475,12 @@ run_test() {
 # ---------- 主流程 ----------
 main() {
   local mode="dev"
-  if [ "$#" -gt 1 ]; then err "参数过多：$*（用法: setup.sh [--check|--test]）"; exit 2; fi
+  if [ "$#" -gt 1 ]; then err "参数过多：$*（用法: setup.sh [--check|--test|--sln]）"; exit 2; fi
   if [ "$#" -eq 1 ]; then
     case "$1" in
       --check) mode="check" ;;
       --test)  mode="test" ;;
+      --sln)   mode="sln" ;;
       -h|--help) print_help; exit 0 ;;
       *) err "未知参数：$1"; exit 2 ;;
     esac
@@ -423,6 +488,13 @@ main() {
 
   local root
   root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+  # --sln 仅支持 Windows（VS 生成器需 MSVC 工具链）；Linux 请用默认 Ninja 构建。
+  # 必须在 sync/fetch/probe 之前拒绝 → Linux 下立即退出，无网络/探测副作用（回归可断言）。
+  if [ "$mode" = "sln" ] && is_linux; then
+    err "--sln 仅支持 Windows（VS 生成器需 MSVC 工具链）；Linux 请用默认 Ninja 构建。"
+    exit 2
+  fi
 
   # --test 模式：python 升级为硬依赖（smoke.sh 解码 PNG 需要）。
   [ "$mode" = "test" ] && PY_TEST_NEEDED=1 || PY_TEST_NEEDED=0
@@ -449,13 +521,21 @@ main() {
     exit 1
   fi
 
-  build_pc "$root"
+  if [ "$mode" = "sln" ]; then
+    build_pc_sln "$root"
+  else
+    build_pc "$root"
+  fi
 
   if [ "$mode" = "test" ]; then
     run_test "$root"
   fi
 
-  info "paint-pc 环境就绪。运行: ./build/paint_pc（有显示）/ ./build/paint_pc --headless out.png（离屏）"
+  if [ "$mode" = "sln" ]; then
+    info "已生成 VS 解决方案：build/msvc/paint_pc.sln（VS 打开选 Debug 开发）"
+  else
+    info "paint-pc 环境就绪。运行: ./build/paint_pc（有显示）/ ./build/paint_pc --headless out.png（离屏）"
+  fi
   exit 0
 }
 

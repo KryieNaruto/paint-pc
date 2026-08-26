@@ -9,12 +9,14 @@
               软依赖缺失仅警告；
       3) 拉取  git submodule update（SDK，钉 9e6eefb）；
       4) 构建  vcvars64 环境内 cmake -B build -G Ninja + cmake --build；
-      5) 测试  --test 模式跑 tests/smoke.sh（Git Bash/WSL 内跑，headless 离屏 PNG 真实笔迹断言）。
+      5) 测试  --test 模式跑 tests/smoke.sh（Git Bash/WSL 内跑，headless 离屏 PNG 真实笔迹断言）；
+      6) 生成  -Sln 模式用 CMake VS 生成器产出 build/msvc/paint_pc.sln 并构建 Debug 验证链接。
 
     用法（PowerShell 5.1+ / Core 7+）:
       .\scripts\setup.ps1              默认（开发）：探测+补缺指引+拉 submodule+构建
       .\scripts\setup.ps1 --check      只探测不安装，输出缺项清单
       .\scripts\setup.ps1 --test       探测+构建+跑测试门（需 Git Bash 或 WSL 提供 bash）
+      .\scripts\setup.ps1 -Sln         生成 VS 解决方案 build\msvc\paint_pc.sln 并构建 Debug
       .\scripts\setup.ps1 -Help        打印本帮助
 
     口径来源: docs/env/env-setup.md §3（Windows VS2026）+ SDK scripts/setup-env.ps1。
@@ -23,6 +25,8 @@
     只探测不安装，输出缺项清单。硬依赖缺失 → exit 1，仅软依赖缺失 → exit 0。
 .PARAMETER Test
     探测 + 构建 + 跑测试门（tests/smoke.sh）。
+.PARAMETER Sln
+    生成 VS 解决方案（build\msvc\paint_pc.sln）并构建 Debug 验证链接。
 .PARAMETER Help
     打印帮助后退出。
 #>
@@ -30,6 +34,7 @@
 param(
     [switch]$Check,
     [switch]$Test,
+    [switch]$Sln,
     [switch]$Help
 )
 
@@ -62,8 +67,37 @@ function Find-VsInstallation {
     $vswhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
     if (-not (Test-Path $vswhere)) { $vswhere = Join-Path $env:ProgramFiles "Microsoft Visual Studio\Installer\vswhere.exe" }
     if (-not (Test-Path $vswhere)) { return "" }
-    $vs = & $vswhere -prerelease -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+    # -all 包含所有版本，-prerelease 纳入 Insiders/预览版（缺 -prerelease 会过滤 2026 Insiders）。
+    $vs = & $vswhere -all -prerelease -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
     return ($vs | Select-Object -First 1).Trim()
+}
+
+# 定位 VS 的 installationVersion（与 Find-VsInstallation 同参数 -all -prerelease -latest），
+# 供 -Sln 模式推导 CMake VS 生成器名。vswhere 无结果时退回安装路径版本段。
+function Find-VsVersion {
+    $vswhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
+    if (-not (Test-Path $vswhere)) { $vswhere = Join-Path $env:ProgramFiles "Microsoft Visual Studio\Installer\vswhere.exe" }
+    if (Test-Path $vswhere) {
+        $ver = & $vswhere -all -prerelease -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationVersion 2>$null
+        if (-not $ver) { $ver = & $vswhere -all -prerelease -latest -products * -property installationVersion 2>$null }
+        if ($ver) { return ($ver | Select-Object -First 1).Trim() }
+    }
+    $vs = Find-VsInstallation
+    if ($vs) { return (Split-Path (Split-Path $vs -Parent) -Leaf) }  # <major>\<SKU> → 版本段在 SKU 上一级
+    return ""
+}
+
+# 版本/年份 → CMake VS 生成器名（major 16/17/18 → 2019/2022/2026）。
+function Get-VsGeneratorName {
+    param([string]$Version)
+    if (-not $Version) { return "" }
+    $major = ($Version -split '\.')[0]
+    switch ($major) {
+        "16" { return "Visual Studio 16 2019" }
+        "17" { return "Visual Studio 17 2022" }
+        "18" { return "Visual Studio 18 2026" }
+        default { return "" }
+    }
 }
 
 function Probe-VisualStudio {
@@ -176,6 +210,32 @@ function Build-Pc {
     Ok "构建产物: build\paint_pc.exe"
 }
 
+# -Sln 模式：用 CMake VS 生成器在独立目录 build\msvc\ 生成 paint_pc.sln，并构建 Debug 验证链接。
+# 与 setup.sh build_pc_sln 逐项对应：-G <gen> -A x64 + CMAKE_GENERATOR_INSTANCE 钉到具体 VS 实例，
+# 显式传 CMAKE_MSVC_RUNTIME_LIBRARY=MultiThreadedDLL 与 SDK 守卫一致（/MD，匹配 shaderc Release lib）。
+function Build-Sln {
+    param([string]$Root)
+    $vs = Find-VsInstallation
+    if (-not $vs) { Err "未找到 VS 安装（-Sln 需要 VS2019/2022/2026）"; exit 1 }
+    $ver = Find-VsVersion
+    $gen = Get-VsGeneratorName $ver
+    if (-not $gen) { Err "无法从 VS 版本『$ver』推导 CMake 生成器（支持 VS2019/2022/2026）"; exit 1 }
+    Info "生成 VS 解决方案：$gen（实例：$vs）…"
+    Push-Location $Root
+    $cmakeArgs = @("-S", $Root, "-B", (Join-Path $Root "build\msvc"), "-G", $gen, "-A", "x64",
+        "-DCMAKE_GENERATOR_INSTANCE=$vs",
+        "-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreadedDLL",
+        "-DDGCPAIN_BUILD_TESTS=OFF", "-DDGCPAIN_BUILD_CLI=OFF")
+    if ($env:DGCPAIN_DEPS_ROOT) { $cmakeArgs += "-DDGCPAIN_DEPS_ROOT=$env:DGCPAIN_DEPS_ROOT" }
+    & cmake @cmakeArgs
+    if ($LASTEXITCODE -ne 0) { Err "VS 解决方案 configure 失败"; Pop-Location; exit 1 }
+    Info "构建 Debug 配置验证链接…"
+    & cmake --build (Join-Path $Root "build\msvc") --config Debug -j
+    if ($LASTEXITCODE -ne 0) { Err "Debug 构建失败"; Pop-Location; exit 1 }
+    Pop-Location
+    Ok "已生成：build\msvc\paint_pc.sln（VS 打开，选 Debug 配置开发）"
+}
+
 function Run-Test {
     param([string]$Root)
     # smoke.sh 是 Bash 脚本；需 Git Bash 或 WSL 提供 bash。
@@ -206,9 +266,10 @@ if ($Check) { if ($script:HardMiss -gt 0) { Print-Guidance; exit 1 }; exit 0 }
 if ($script:HardMiss -gt 0) { Print-Guidance; Err "硬依赖缺失 $($script:HardMiss) 项。请按指引补缺后重跑。"; exit 1 }
 
 Sync-Submodule $Root
-Build-Pc $Root
+if ($Sln) { Build-Sln $Root } else { Build-Pc $Root }
 
 if ($Test) { Run-Test $Root }
 
-Info "paint-pc 环境就绪。运行: .\build\paint_pc.exe（有显示）/ .\build\paint_pc.exe --headless out.png（离屏）"
+if ($Sln) { Info "已生成 VS 解决方案：build\msvc\paint_pc.sln（VS 打开选 Debug 开发）" }
+else { Info "paint-pc 环境就绪。运行: .\build\paint_pc.exe（有显示）/ .\build\paint_pc.exe --headless out.png（离屏）" }
 exit 0
