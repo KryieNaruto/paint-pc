@@ -4,3 +4,4 @@ imgui.ini
 
 # clangd 缓存
 .cache/
+/_build
