@@ -311,6 +311,35 @@ sync_submodule() {
   git -C "$root" submodule update --init --recursive
 }
 
+# 生成 MSVC 构建批处理，返回供 `cmd //c` 调用的相对路径参数。
+# 关键：cmd 只接收「无空格、无引号」的相对路径 —— Git Bash/MSYS2 会把参数内 `"` 重转义
+# 为 `\"`，而 cmd.exe 不认 `\"` 转义，会把 `\"C:\...bat\"` 当命令名报
+# "'\"...\"' 不是内部或外部命令"。引号只出现在 bat 文件内容里（文件内字面），不经参数传递。
+make_msvc_build_bat() {
+  local root="$1" vcvars="$2" vsdk_bin="$3"
+  local root_win vc_win
+  root_win="$(cygpath -w "$root")"
+  vc_win="$(cygpath -w "$vcvars")"
+  mkdir -p "$root/build"
+  cat > "$root/build/_setup_msvc.bat" <<EOF
+@echo off
+call "$vc_win"
+if errorlevel 1 exit /b %errorlevel%
+EOF
+  # 仅当 VULKAN_SDK 已设（探测阶段已保证）才注入其 Bin 到 PATH；未设时不写脏路径 `/Bin`。
+  if [ -n "$vsdk_bin" ]; then
+    printf 'set "PATH=%s;%%PATH%%"\n' "$vsdk_bin" >> "$root/build/_setup_msvc.bat"
+  fi
+  cat >> "$root/build/_setup_msvc.bat" <<EOF
+cd /d "$root_win"
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DDGCPAIN_BUILD_TESTS=OFF -DDGCPAIN_BUILD_CLI=OFF
+if errorlevel 1 exit /b %errorlevel%
+cmake --build build -j
+exit /b %errorlevel%
+EOF
+  printf 'build/_setup_msvc.bat'
+}
+
 build_pc() {
   local root="$1"
   info "构建 paint_pc…"
@@ -328,15 +357,14 @@ build_pc() {
     vcvars="$(find_vcvars || true)"
     if [ -n "$vcvars" ]; then
       info "进入 MSVC 环境（vcvars64）…"
-      # 用 cmd /c 包裹：先 call vcvars64.bat 注入 MSVC 环境，再执行 cmake 配置 + 构建。
-      # VULKAN_SDK 的 Bin 需在 PATH（vulkan-1.lib 链接）。工作目录切到仓库根。
-      local root_win vc_win vsdk_bin
-      root_win="$(cygpath -w "$root")"
-      vc_win="$(cygpath -w "$vcvars")"
-      vsdk_bin="${VULKAN_SDK:-}/Bin"
-      cmd //c "call \"$vc_win\" && set PATH=$vsdk_bin;%PATH% && cd /d \"$root_win\" && cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DDGCPAIN_BUILD_TESTS=OFF -DDGCPAIN_BUILD_CLI=OFF && cmake --build build -j"
-      local rc=$?
-      [ $rc -ne 0 ] && return $rc
+      local cmd_arg
+      # VULKAN_SDK 未设时传空串 → bat 不写 /Bin 脏路径（探测阶段已保证 VULKAN_SDK 已设）。
+      cmd_arg="$(make_msvc_build_bat "$root" "$vcvars" "${VULKAN_SDK:+${VULKAN_SDK}/Bin}")"
+      # 显式 cd 到仓库根再调 cmd —— bat 是相对路径，必须保证 cmd 的 cwd == $root。
+      # （原实现把 `cd /d "$root_win"` 放 cmd 串内不依赖调用方 cwd；本实现等价恢复该性质。）
+      if ! ( cd "$root" && cmd //c "$cmd_arg" ); then
+        return 1
+      fi
       return 0
     fi
     # 探测阶段应已拦截（MSVC 缺则 HARD_MISS），这里兜底报错。
@@ -401,4 +429,6 @@ main() {
   exit 0
 }
 
-main "$@"
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then
+  main "$@"
+fi
