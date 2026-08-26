@@ -311,6 +311,25 @@ sync_submodule() {
   git -C "$root" submodule update --init --recursive
 }
 
+# 拉取三方库（复用 SDK 共享 fetch-deps.sh，--fetch 从国内镜像拉取/解包到 sdk/deps/usr）。
+# 关键：fetch-deps 是子进程，其内部 export 不回传本 shell；此处按 deps 落盘位置显式设
+# DGCPAIN_DEPS_ROOT（deps 在 SDK submodule 根 sdk/deps/usr，不是 paint-pc 根 deps）。
+fetch_deps() {
+  local root="$1"
+  local sdk_script="$root/sdk/scripts/fetch-deps.sh"
+  if [ ! -f "$sdk_script" ]; then
+    warn "未找到 sdk/scripts/fetch-deps.sh（submodule 未更新到含共享拉取脚本的版本？跳过依赖拉取）"
+    return 0
+  fi
+  info "拉取三方库（fetch-deps）…"
+  bash "$sdk_script" --fetch
+  if [ -z "${DGCPAIN_DEPS_ROOT:-}" ] && [ -d "$root/sdk/deps/usr" ]; then
+    export DGCPAIN_DEPS_ROOT="$root/sdk/deps/usr"
+  fi
+  # 可选镜像加速：用户已设 PC_FETCH_MIRROR 时透传给 cmake（默认不设，走官方 GitHub）。
+  export PC_FETCH_MIRROR="${PC_FETCH_MIRROR:-}"
+}
+
 # 生成 MSVC 构建批处理，返回供 `cmd //c` 调用的参数。
 # 关键不变量：cmd 参数必须「无斜杠、无空格、无引号」（裸文件名 `_setup_msvc.bat`）。
 #   - 无引号：Git Bash/MSYS2 会把参数内 `"` 重转义为 `\"`，而 cmd.exe 不认 `\"`，
@@ -424,6 +443,7 @@ main() {
   fi
 
   sync_submodule "$root"
+  fetch_deps "$root"
   build_pc "$root"
 
   if [ "$mode" = "test" ]; then
