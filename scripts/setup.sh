@@ -81,13 +81,33 @@ probe_ninja() {
 
 # ── Windows/VS 定位辅助（全自动无人值守；假定用户已装 VS2026）──────────────
 # vswhere 是 VS 自带定位器，固定路径在 VS Installer 目录；Git Bash 里不在 PATH。
+
+# 把 Windows 路径（C:\foo\bar）转 MSYS 路径（/c/foo/bar），纯 bash、不依赖 cygpath。
+# Git Bash 里 Windows 环境变量（LOCALAPPDATA）与 vswhere 输出都是 C:\ 反斜杠形式，
+# 而 bash 的 [ -f ]/[ -d ] 不做路径转换，必须转成 /c/ 才能测。
+msys_from_win() {
+  local p="$1" drive rest
+  p="${p//\\//}"                                  # 反斜杠 → 正斜杠
+  if [[ "$p" =~ ^([A-Za-z]):(/.*)?$ ]]; then      # C:/foo/bar → /c/foo/bar
+    drive="$(printf '%s' "${BASH_REMATCH[1]}" | tr 'A-Z' 'a-z')"
+    rest="${BASH_REMATCH[2]:-/}"
+    printf '/%s%s' "$drive" "$rest"
+  else
+    printf '%s' "$p"
+  fi
+}
+
 find_vswhere() {
+  local la p
   local candidates=(
-    "${LOCALAPPDATA:-}/Microsoft/VisualStudio/Installer/vswhere.exe"
     "/c/Program Files (x86)/Microsoft Visual Studio/Installer/vswhere.exe"
     "/c/Program Files/Microsoft Visual Studio/Installer/vswhere.exe"
   )
-  local p
+  # LOCALAPPDATA 是 Windows 风格（C:\Users\...），转 MSYS 再拼。
+  if [ -n "${LOCALAPPDATA:-}" ]; then
+    la="$(msys_from_win "$LOCALAPPDATA")"
+    candidates+=("$la/Microsoft/Visual Studio/Installer/vswhere.exe")
+  fi
   for p in "${candidates[@]}"; do
     [ -f "$p" ] && { printf '%s' "$p"; return 0; }
   done
@@ -95,12 +115,19 @@ find_vswhere() {
   return 1
 }
 
-# 用 vswhere 查含 VC 工具集的 VS 安装路径（输出首行，去 CRLF）。
+# 用 vswhere 查含 VC 工具集的 VS 安装路径（输出首行，去 CRLF，转 MSYS 路径）。
+# 先带 -requires 精确匹配 VC 工具集；找不到则降级不带 -requires（组件名变体/未装工作负载
+# 时仍能定位 VS 安装目录，让脚本报更精确的「缺组件」而非「没找到 VS」）。
 find_vs() {
-  local vswhere vs
+  local vswhere vs vs_msys
   vswhere="$(find_vswhere)" || return 1
   vs="$("$vswhere" -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath 2>/dev/null | tr -d '\r' | head -n1)"
-  [ -n "$vs" ] && [ -d "$vs" ] && { printf '%s' "$vs"; return 0; }
+  [ -z "$vs" ] && vs="$("$vswhere" -latest -products '*' -property installationPath 2>/dev/null | tr -d '\r' | head -n1)"
+  [ -z "$vs" ] && return 1
+  vs_msys="$(msys_from_win "$vs")"
+  if [ -d "$vs_msys" ]; then
+    printf '%s' "$vs_msys"; return 0
+  fi
   return 1
 }
 
