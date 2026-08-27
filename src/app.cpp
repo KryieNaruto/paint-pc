@@ -213,6 +213,17 @@ void App::run() {
         if (ImGui::Checkbox("VSync", &m->vsyncOn)) {
             glfwSwapInterval(m->vsyncOn ? 1 : 0);
         }
+        ImGui::SameLine();
+        ImGui::TextUnformatted(m->vsyncOn ? "(ON — 帧率应被限制到显示器刷新率附近)"
+                                           : "(OFF — 帧率应明显偏离/超过刷新率，或抖动)");
+        // 人工核验辅助：打印显示器标称刷新率，便于对照上方 Performance 面板的 FPS 读数
+        // 做「开 vsync≈刷新率 / 关 vsync 明显偏离」判断，记录见
+        // docs/manual-verification/D6-3-vsync-fps.md（该文档需人工在真实设备上填写）。
+        if (GLFWmonitor* mon = glfwGetPrimaryMonitor()) {
+            if (const GLFWvidmode* mode = glfwGetVideoMode(mon)) {
+                ImGui::Text("Monitor refresh rate (nominal): %d Hz", mode->refreshRate);
+            }
+        }
         ImGui::End();
 
         ImGui::Render();
