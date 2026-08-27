@@ -116,12 +116,24 @@ void GlCanvas::upload(const uint8_t* rgba, int w, int h) {
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba);
 }
 
-void GlCanvas::draw(int viewW, int viewH) {
-    glViewport(0, 0, viewW, viewH);
+void GlCanvas::draw(int screenW, int screenH, double u0, double v0, double u1, double v1) {
+    glViewport(0, 0, screenW, screenH);
     glUseProgram(prog_);
     glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D, tex_);
     glUniform1i(glGetUniformLocation(prog_, "uCanvas"), 0);
+
+    // D6-2 缩放：quad 顶点位置固定铺满窗口（zoom clamp 到 >=1，视口子矩形恒在画布内，
+    // 不需要屏上几何 letterbox），只重写 UV 为画布子矩形，实现“放大显示 = 采样更小子矩形”。
+    const float fu0 = (float)u0, fv0 = (float)v0, fu1 = (float)u1, fv1 = (float)v1;
+    const float verts[] = {
+        -1.f, -1.f, fu0, fv0,
+         1.f, -1.f, fu1, fv0,
+         1.f,  1.f, fu1, fv1,
+        -1.f,  1.f, fu0, fv1,
+    };
     glBindVertexArray(vao_);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo_);
+    glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(verts), verts);
     glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
     glBindVertexArray(0);
 }
