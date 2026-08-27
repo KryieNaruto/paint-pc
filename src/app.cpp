@@ -6,6 +6,7 @@
 #include <imgui_impl_opengl3.h>
 
 #include "dgc_paint_c_api.h"
+#include "coords.h"
 #include "gl_canvas.h"
 
 #include <cstdint>
@@ -40,11 +41,15 @@ struct App::Impl {
         if (!impl || !impl->sdk) return;
         if (button == GLFW_MOUSE_BUTTON_LEFT) {
             double x, y; glfwGetCursorPos(window, &x, &y);
-            // 越界裁剪（spec §6）：超出画布则丢弃该点，避免负坐标进 SDK。
-            if (x < 0 || y < 0 || x >= impl->canvasW || y >= impl->canvasH) { impl->strokeActive = false; return; }
+            // 窗口内容坐标 → 画布像素坐标：非默认分辨率（DPI 缩放 !=1）下 content != canvas，必须按比例换算。
+            int cw = 0, ch = 0; glfwGetWindowSize(window, &cw, &ch);
+            double cx, cy;
+            MapCursorToCanvas(x, y, cw, ch, impl->canvasW, impl->canvasH, &cx, &cy);
+            // 越界裁剪（spec §6）：用换算后的画布坐标与画布尺寸比较，坐标系一致；超出则丢弃该点，避免负坐标进 SDK。
+            if (cx < 0 || cy < 0 || cx >= impl->canvasW || cy >= impl->canvasH) { impl->strokeActive = false; return; }
             impl->strokeActive = (action == GLFW_PRESS);
             if (impl->strokeActive) {
-                int rc = dgcBeginStroke(impl->sdk, (float)x, (float)y, 0.5f, 0.f, 0.f);
+                int rc = dgcBeginStroke(impl->sdk, (float)cx, (float)cy, 0.5f, 0.f, 0.f);
                 if (rc != 0) std::fprintf(stderr, "[paint-pc] beginStroke: %s\n", dgcGetLastError());
             } else {
                 int rc = dgcEndStroke(impl->sdk);
@@ -57,8 +62,12 @@ struct App::Impl {
     static void OnCursorPos(GLFWwindow* window, double x, double y) {
         auto* impl = static_cast<Impl*>(glfwGetWindowUserPointer(window));
         if (!impl || !impl->sdk || !impl->strokeActive) return;
-        if (x < 0 || y < 0 || x >= impl->canvasW || y >= impl->canvasH) return;  // 越界丢弃
-        int rc = dgcStrokeTo(impl->sdk, (float)x, (float)y, 0.5f, 0.f, 0.f, 0);
+        // 与 OnMouseButton 同一映射（内容坐标 → 画布像素），保持笔画各点坐标系一致。
+        int cw = 0, ch = 0; glfwGetWindowSize(window, &cw, &ch);
+        double cx, cy;
+        MapCursorToCanvas(x, y, cw, ch, impl->canvasW, impl->canvasH, &cx, &cy);
+        if (cx < 0 || cy < 0 || cx >= impl->canvasW || cy >= impl->canvasH) return;  // 越界丢弃
+        int rc = dgcStrokeTo(impl->sdk, (float)cx, (float)cy, 0.5f, 0.f, 0.f, 0);
         if (rc != 0) std::fprintf(stderr, "[paint-pc] strokeTo: %s\n", dgcGetLastError());
     }
 
@@ -111,6 +120,12 @@ bool App::init(int width, int height, const char* title) {
     glfwSetMouseButtonCallback(impl->window, App::Impl::OnMouseButton);
     glfwSetCursorPosCallback(impl->window, App::Impl::OnCursorPos);
     glfwSetFramebufferSizeCallback(impl->window, App::Impl::OnFramebufferSize);
+    // 显式同步初始帧缓冲尺寸：创建时回调是否触发依赖平台事件时机，不能假设必然发生；
+    // 非默认分辨率（DPI 缩放 !=1）下保证首帧画布尺寸为真实帧缓冲尺寸。
+    int fbw = impl->width, fbh = impl->height;
+    glfwGetFramebufferSize(impl->window, &fbw, &fbh);
+    impl->width = fbw; impl->height = fbh;
+    impl->canvasW = fbw; impl->canvasH = fbh;   // 后续 dgcSetOffscreenSurface/GlCanvas 用真实帧缓冲尺寸
 
     // ImGui 初始化（GLFW + OpenGL3 后端）。
     IMGUI_CHECKVERSION();
