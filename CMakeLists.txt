@@ -1,6 +1,8 @@
 cmake_minimum_required(VERSION 3.22)
 project(paint_pc LANGUAGES C CXX)
 
+enable_testing()
+
 # paint-pc：PC UI 消费者（窗口 / 输入 / present 自备）。
 # 外壳期：GLFW + ImGui + OpenGL 清屏。待 SDK B1-4 C API / B2-1 Vulkan 落地后接入。
 
@@ -66,6 +68,7 @@ add_executable(paint_pc
     src/app.cpp
     src/gl_canvas.cpp
     src/headless.cpp
+    src/coords.cpp
 )
 target_include_directories(paint_pc PRIVATE src)
 
@@ -75,3 +78,8 @@ target_link_libraries(paint_pc PRIVATE dgc_paint paint_imgui glfw)
 # OpenGL：不同平台链接名不同（Linux 用 OpenGL::GL）。
 find_package(OpenGL REQUIRED)
 target_link_libraries(paint_pc PRIVATE OpenGL::GL)
+
+# --- 坐标映射纯函数回归测试（无头可跑，不链接 dgc_paint/GLFW）----------------
+add_executable(paint_pc_coord_test tests/coord_test.cpp src/coords.cpp)
+target_include_directories(paint_pc_coord_test PRIVATE src)
+add_test(NAME coord_test COMMAND paint_pc_coord_test)
