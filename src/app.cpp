@@ -68,6 +68,11 @@ struct App::Impl {
         }
     }
 
+    // D6-3：笔刷颜色（straight RGBA，取色器默认黑，与内核默认 ColorH/S/V=0 一致）+
+    // 垂直同步开关（初始态与 glfwSwapInterval(1) 一致）。
+    float brushColor[4] = {0.0f, 0.0f, 0.0f, 1.0f};
+    bool vsyncOn = true;
+
     // 鼠标 / 数位笔按键回调：按下 / 抬起转发到 C API（dgcBeginStroke / dgcEndStroke）。
     static void OnMouseButton(GLFWwindow* window, int button, int action, int mods) {
         (void)mods;
@@ -278,6 +283,37 @@ void App::run() {
         }
         if (ImGui::SliderFloat("预测间隔 prediction_interval_ms", &m->predictionIntervalMs, 0.0f, 100.0f)) {
             m->ApplyBrushSetting(DGC_SETTING_PREDICTION_INTERVAL_MS, m->predictionIntervalMs, "prediction_interval_ms");
+        }
+        ImGui::End();
+
+        // D6-3：显示控制——笔刷颜色 + 垂直同步开关。
+        ImGui::SetNextWindowPos(ImVec2(12, 120), ImGuiCond_FirstUseEver);
+        ImGui::Begin("Brush / Display");
+        // 取色器变更即桥接到 SDK 默认笔刷（DGC_DEFAULT_BRUSH），下一笔画用新色；
+        // 注意：颜色变更应在引擎空闲 / 笔画之间调用（与 SDK 侧 setBrushColor 并发
+        // caveat 一致），此处 UI 线程回调天然满足（笔画进行中鼠标按下不会触发取色器）。
+        if (m->sdk && ImGui::ColorEdit4("Brush Color", m->brushColor)) {
+            int rc = dgcSetBrushColor(m->sdk, DGC_DEFAULT_BRUSH, m->brushColor[0],
+                                       m->brushColor[1], m->brushColor[2], m->brushColor[3]);
+            if (rc != 0) {
+                std::fprintf(stderr, "[paint-pc] setBrushColor: %s\n", dgcGetLastError());
+            }
+        }
+        // 垂直同步：SDK 纯离屏无 vsync 概念（见 SDK README「垂直同步（vsync）归属」），
+        // 此处纯消费端 present 模式切换，即时生效，不经过 SDK。
+        if (ImGui::Checkbox("VSync", &m->vsyncOn)) {
+            glfwSwapInterval(m->vsyncOn ? 1 : 0);
+        }
+        ImGui::SameLine();
+        ImGui::TextUnformatted(m->vsyncOn ? "(ON — 帧率应被限制到显示器刷新率附近)"
+                                           : "(OFF — 帧率应明显偏离/超过刷新率，或抖动)");
+        // 人工核验辅助：打印显示器标称刷新率，便于对照上方 Performance 面板的 FPS 读数
+        // 做「开 vsync≈刷新率 / 关 vsync 明显偏离」判断，记录见
+        // docs/manual-verification/D6-3-vsync-fps.md（该文档需人工在真实设备上填写）。
+        if (GLFWmonitor* mon = glfwGetPrimaryMonitor()) {
+            if (const GLFWvidmode* mode = glfwGetVideoMode(mon)) {
+                ImGui::Text("Monitor refresh rate (nominal): %d Hz", mode->refreshRate);
+            }
         }
         ImGui::End();
 
