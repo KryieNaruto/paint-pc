@@ -349,8 +349,8 @@ EOF
 # ---------- 动作 ----------
 sync_submodule() {
   local root="$1"
-  info "同步 SDK submodule…"
-  git -C "$root" submodule update --init --recursive
+  info "同步 SDK submodule（跟随 paintDemo main 最新）…"
+  git -C "$root" submodule update --init --recursive --remote
 }
 
 # 拉取三方库（复用 SDK 共享 fetch-deps.sh，--fetch 从国内镜像拉取/解包到 sdk/deps/usr）。

@@ -7,7 +7,7 @@
       1) 探测  VS2026 (MSVC cl.exe) / CMake / Ninja / Vulkan SDK / glslc / python / git；
       2) 补缺  硬依赖缺失给精确安装指引（VS installer / Vulkan SDK 下载器 / git / python），
               软依赖缺失仅警告；
-      3) 拉取  git submodule update（SDK，钉 9e6eefb）；
+      3) 拉取  git submodule update --remote（SDK 跟随 paintDemo main 最新，不钉 pin）；
       4) 构建  vcvars64 环境内 cmake -B build -G Ninja + cmake --build；
       5) 测试  --test 模式跑 tests/smoke.sh（Git Bash/WSL 内跑，headless 离屏 PNG 真实笔迹断言）；
       6) 生成  -Sln 模式用 CMake VS 生成器产出 build/msvc/paint_pc.sln 并构建 Debug 验证链接。
@@ -193,9 +193,9 @@ function Print-Guidance {
 # ---------- 动作 ----------
 function Sync-Submodule {
     param([string]$Root)
-    Info "同步 SDK submodule…"
+    Info "同步 SDK submodule（跟随 paintDemo main 最新）…"
     Push-Location $Root
-    & git submodule update --init --recursive
+    & git submodule update --init --recursive --remote
     if ($LASTEXITCODE -ne 0) { Err "submodule 同步失败"; Pop-Location; exit 1 }
     Pop-Location
 }
