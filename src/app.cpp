@@ -34,6 +34,40 @@ struct App::Impl {
     double lastReadMs = 0.0;          // 读回耗时
     bool strokeActive = false;
 
+    // D6-1：调试面板「画笔参数」——有效笔刷句柄（init() 里 dgcCreateBrush 一次拿到，
+    // 仅做发号器校验用，不切换/加载具体笔刷，见 SDK docs/brush_settings_mapping.md）。
+    DgcBrush brush = DGC_INVALID_BRUSH;
+
+    // 笔刷内核基础参数（settingId 0-2，当前仅存参、不作用于默认笔刷渲染，滑杆仍保留）。
+    float brushRadius = 20.0f;
+    float brushHardness = 0.8f;
+    float brushOpacity = 1.0f;
+
+    // stroke modeler 9 个参数（settingId 4-12），初值取自 core/stroke_predictor.h 的
+    // StrokeModelParams 字面默认值（惰性激活：面板未拖动前 SDK 不会创建/注入预测器，
+    // 与「默认零回归」一致；一旦拖动任一滑杆才透传到 dgcSetBrushSetting）。
+    float wobbleTimeoutMs = 40.0f;
+    float wobbleSpeedFloor = 1.31f;
+    float minOutputRateHz = 180.0f;
+    float endOfStrokeStoppingDistanceMm = 0.1f;
+    float springMassConstant = 400.0f;
+    float springDragConstant = 40.0f;
+    float kalmanProcessNoise = 0.0005f;
+    float kalmanMeasurementNoise = 0.004f;
+    float predictionIntervalMs = 16.0f;
+
+    // 面板改参统一入口：strokeActive==true（笔画进行中）时不下发，避免笔画中途改参
+    // 只影响后续点、不回溯当前笔画（见 SDK plan D6-1 风险 R7 的生产约定）。
+    void ApplyBrushSetting(int settingId, double value, const char* label) {
+        if (strokeActive || brush == DGC_INVALID_BRUSH) {
+            return;
+        }
+        int rc = dgcSetBrushSetting(sdk, brush, settingId, value);
+        if (rc != DGC_OK) {
+            std::fprintf(stderr, "[paint-pc] setBrushSetting(%s): %s\n", label, dgcGetLastError());
+        }
+    }
+
     // 鼠标 / 数位笔按键回调：按下 / 抬起转发到 C API（dgcBeginStroke / dgcEndStroke）。
     static void OnMouseButton(GLFWwindow* window, int button, int action, int mods) {
         (void)mods;
@@ -148,6 +182,13 @@ bool App::init(int width, int height, const char* title) {
     impl->rgba.assign((size_t)impl->canvasW * impl->canvasH * 4, 255);
     impl->canvas = new GlCanvas(impl->canvasW, impl->canvasH);
 
+    // D6-1：拿一个有效笔刷句柄供「画笔参数」调试面板的 dgcSetBrushSetting 调用
+    // （句柄仅做发号器校验，不切换/加载具体笔刷，见 SDK B1-4/D6-1 说明）。
+    impl->brush = dgcCreateBrush(impl->sdk, nullptr);
+    if (impl->brush == DGC_INVALID_BRUSH) {
+        std::fprintf(stderr, "[paint-pc] createBrush: %s\n", dgcGetLastError());
+    }
+
     return true;
 }
 
@@ -188,6 +229,56 @@ void App::run() {
         ImGui::Text("Frame: %.2f ms", 1000.0 / (ImGui::GetIO().Framerate > 0 ? ImGui::GetIO().Framerate : 1.0));
         ImGui::Text("Readback: %.2f ms", m->lastReadMs);
         ImGui::Text("Canvas: %dx%d", m->canvasW, m->canvasH);
+        ImGui::End();
+
+        // D6-1：画笔参数调试面板——9 个 stroke modeler 滑杆 + 既有 radius/hardness/
+        // opacity。改参在 strokeActive==false（两笔画之间）时才下发到 dgcSetBrushSetting
+        // （见 Impl::ApplyBrushSetting），滑杆范围取自 SDK docs/brush_settings_mapping.md。
+        ImGui::SetNextWindowPos(ImVec2(12, 140), ImGuiCond_FirstUseEver);
+        ImGui::Begin("画笔参数 (Brush Params)");
+        if (m->strokeActive) {
+            ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.2f, 1.0f), "笔画进行中：改参将在抬笔后生效");
+        }
+        ImGui::SeparatorText("笔刷内核基础参数（存参，暂不作用于默认笔刷）");
+        if (ImGui::SliderFloat("半径 radius", &m->brushRadius, 1.0f, 100.0f)) {
+            m->ApplyBrushSetting(DGC_SETTING_RADIUS, m->brushRadius, "radius");
+        }
+        if (ImGui::SliderFloat("硬度 hardness", &m->brushHardness, 0.0f, 1.0f)) {
+            m->ApplyBrushSetting(DGC_SETTING_HARDNESS, m->brushHardness, "hardness");
+        }
+        if (ImGui::SliderFloat("不透明度 opacity", &m->brushOpacity, 0.0f, 1.0f)) {
+            m->ApplyBrushSetting(DGC_SETTING_OPACITY, m->brushOpacity, "opacity");
+        }
+        ImGui::SeparatorText("Stroke Modeler 参数（改参后笔迹明显变化）");
+        if (ImGui::SliderFloat("抖动消除超时 wobble_timeout_ms", &m->wobbleTimeoutMs, 0.0f, 200.0f)) {
+            m->ApplyBrushSetting(DGC_SETTING_WOBBLE_TIMEOUT_MS, m->wobbleTimeoutMs, "wobble_timeout_ms");
+        }
+        if (ImGui::SliderFloat("抖动消除最低速度 wobble_speed_floor", &m->wobbleSpeedFloor, 0.0f, 10.0f)) {
+            m->ApplyBrushSetting(DGC_SETTING_WOBBLE_SPEED_FLOOR, m->wobbleSpeedFloor, "wobble_speed_floor");
+        }
+        if (ImGui::SliderFloat("最小输出采样率 min_output_rate_hz", &m->minOutputRateHz, 20.0f, 500.0f)) {
+            m->ApplyBrushSetting(DGC_SETTING_MIN_OUTPUT_RATE_HZ, m->minOutputRateHz, "min_output_rate_hz");
+        }
+        if (ImGui::SliderFloat("抬笔停止距离 end_of_stroke_stopping_distance_mm",
+                               &m->endOfStrokeStoppingDistanceMm, 0.01f, 5.0f)) {
+            m->ApplyBrushSetting(DGC_SETTING_END_OF_STROKE_STOPPING_DISTANCE_MM,
+                                  m->endOfStrokeStoppingDistanceMm, "end_of_stroke_stopping_distance_mm");
+        }
+        if (ImGui::SliderFloat("弹簧质量常量 spring_mass_constant", &m->springMassConstant, 10.0f, 2000.0f)) {
+            m->ApplyBrushSetting(DGC_SETTING_SPRING_MASS_CONSTANT, m->springMassConstant, "spring_mass_constant");
+        }
+        if (ImGui::SliderFloat("弹簧阻尼常量 spring_drag_constant", &m->springDragConstant, 1.0f, 200.0f)) {
+            m->ApplyBrushSetting(DGC_SETTING_SPRING_DRAG_CONSTANT, m->springDragConstant, "spring_drag_constant");
+        }
+        if (ImGui::SliderFloat("卡尔曼过程噪声 kalman_process_noise", &m->kalmanProcessNoise, 0.00001f, 0.01f, "%.5f")) {
+            m->ApplyBrushSetting(DGC_SETTING_KALMAN_PROCESS_NOISE, m->kalmanProcessNoise, "kalman_process_noise");
+        }
+        if (ImGui::SliderFloat("卡尔曼测量噪声 kalman_measurement_noise", &m->kalmanMeasurementNoise, 0.0001f, 0.1f, "%.4f")) {
+            m->ApplyBrushSetting(DGC_SETTING_KALMAN_MEASUREMENT_NOISE, m->kalmanMeasurementNoise, "kalman_measurement_noise");
+        }
+        if (ImGui::SliderFloat("预测间隔 prediction_interval_ms", &m->predictionIntervalMs, 0.0f, 100.0f)) {
+            m->ApplyBrushSetting(DGC_SETTING_PREDICTION_INTERVAL_MS, m->predictionIntervalMs, "prediction_interval_ms");
+        }
         ImGui::End();
 
         ImGui::Render();
