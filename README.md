@@ -18,7 +18,7 @@ paint-pc/
 │   ├── main.cpp               # 入口：初始化 + 主循环
 │   ├── app.h / app.cpp        # 窗口 / 输入 / present（GLFW + OpenGL + ImGui）
 ├── CMakeLists.txt             # add_subdirectory(sdk) + FetchContent(GLFW/ImGui) + 链接 dgc_paint
-├── sdk/                       # git submodule: paintDemo（路径固定 sdk/）
+├── sdk/                       # git submodule: paintDemo（路径固定 sdk/，跟随 main 最新）
 └── .gitmodules
 ```
 
@@ -60,7 +60,7 @@ scripts/setup.sh --sln          # Git Bash / WSL
 
 ## 接入 SDK（下一轮，等 B1-4 C API 落地）
 
-1. `#include "dgc_paint_c_api.h"`（sdk/ 内，重钉 submodule 到含 C API 的 commit）。
+1. `#include "dgc_paint_c_api.h"`（sdk/ 内）。SDK 跟随 `main` 最新，`scripts/setup.*` 会 `--remote` 拉到最新；不需手动钉版本。
 2. `dgcCreate` → 窗口句柄经 `dgcSetSurface` 传入。
 3. 输入桩替换为：`dgcBeginStroke` → `dgcStrokeTo`（`isPredicted` 按消费者策略送）→ `dgcEndStroke` → `dgcRender`。
 4. present 由 OpenGL 清屏升级为贴 `dgc_paint` 渲染结果（B2-1 Vulkan 落地后走 swapchain）。
