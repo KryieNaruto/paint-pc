@@ -47,10 +47,11 @@ float DrawBrushParamsPanel(const BrushPanelParams& p) {
         if (p.onChange) p.onChange(p.user, DGC_SETTING_END_OF_STROKE_STOPPING_DISTANCE_MM,
                                    (double)*p.endOfStrokeStoppingDistanceMm, "end_of_stroke_stopping_distance_mm");
     }
-    if (ImGui::SliderFloat("弹簧质量常量 spring_mass_constant", p.springMassConstant, 10.0f, 2000.0f)) {
+    // 滑杆范围对齐 SDK 新默认（bugfix Fix B：K/m=40000、C/m=400），默认值须落在范围内。
+    if (ImGui::SliderFloat("弹簧质量常量 spring_mass_constant", p.springMassConstant, 1000.0f, 100000.0f)) {
         if (p.onChange) p.onChange(p.user, DGC_SETTING_SPRING_MASS_CONSTANT, (double)*p.springMassConstant, "spring_mass_constant");
     }
-    if (ImGui::SliderFloat("弹簧阻尼常量 spring_drag_constant", p.springDragConstant, 1.0f, 200.0f)) {
+    if (ImGui::SliderFloat("弹簧阻尼常量 spring_drag_constant", p.springDragConstant, 10.0f, 2000.0f)) {
         if (p.onChange) p.onChange(p.user, DGC_SETTING_SPRING_DRAG_CONSTANT, (double)*p.springDragConstant, "spring_drag_constant");
     }
     if (ImGui::SliderFloat("卡尔曼过程噪声 kalman_process_noise", p.kalmanProcessNoise, 0.00001f, 0.01f, "%.5f")) {
