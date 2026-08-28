@@ -8,9 +8,11 @@
 #include "dgc_paint_c_api.h"
 #include "coords.h"
 #include "gl_canvas.h"
+#include "version.h"
 
 #include <cstdint>
 #include <cstdio>
+#include <string>
 #include <vector>
 
 namespace paint {
@@ -169,7 +171,12 @@ bool App::init(int width, int height, const char* title) {
     impl->width = width;
     impl->height = height;
 
-    impl->window = glfwCreateWindow(width, height, title, nullptr, nullptr);
+    // 版本戳拼进窗口标题：不经 ImGui 渲染管线，哪怕 ImGui 浮层整体没画出来，
+    // 标题栏也能看到当前跑的到底是哪个 pc/sdk 提交（排查"是不是构建了旧代码"）。
+    std::string titleWithVersion = std::string(title) + "  [pc " + kPcGitSha +
+                                    (kPcGitDirty ? "+dirty" : "") + " / sdk " + kSdkGitSha +
+                                    (kSdkGitDirty ? "+dirty" : "") + "]";
+    impl->window = glfwCreateWindow(width, height, titleWithVersion.c_str(), nullptr, nullptr);
     if (!impl->window) {
         std::fprintf(stderr, "[paint-pc] 创建 GLFW 窗口失败\n");
         shutdown();
@@ -263,6 +270,8 @@ void App::run() {
         ImGui::Text("Frame: %.2f ms", 1000.0 / (ImGui::GetIO().Framerate > 0 ? ImGui::GetIO().Framerate : 1.0));
         ImGui::Text("Readback: %.2f ms", m->lastReadMs);
         ImGui::Text("Canvas: %dx%d", m->canvasW, m->canvasH);
+        ImGui::Text("Version: pc %s%s / sdk %s%s", kPcGitSha, kPcGitDirty ? "+dirty" : "",
+                    kSdkGitSha, kSdkGitDirty ? "+dirty" : "");
         ImGui::End();
 
         // D6-1：画笔参数调试面板——9 个 stroke modeler 滑杆 + 既有 radius/hardness/
