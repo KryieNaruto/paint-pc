@@ -18,6 +18,10 @@ int main(int argc, char** argv) {
         const char* out = (argc >= 3) ? argv[2] : "/tmp/coord_repro.png";
         return paint::CoordReproRun(out);
     }
+    if (argc >= 2 && std::strcmp(argv[1], "--font-repro") == 0) {
+        const char* out = (argc >= 3) ? argv[2] : "/tmp/font_check.png";
+        return paint::FontReproRun(out);
+    }
 
     paint::App app;
     if (!app.init(1280, 800, "DGCamp Paint - paint-pc")) {
