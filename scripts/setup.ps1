@@ -259,11 +259,40 @@ function Build-Sln {
     if ($env:DGCPAIN_DEPS_ROOT) { $cmakeArgs += "-DDGCPAIN_DEPS_ROOT=$env:DGCPAIN_DEPS_ROOT" }
     & cmake @cmakeArgs
     if ($LASTEXITCODE -ne 0) { Err "VS 解决方案 configure 失败"; Pop-Location; exit 1 }
-    Info "构建 Debug 配置验证链接…"
+    # 先 clean 再 build：-Sln 模式的定位是"给我一个绝对最新的 Debug 构建去验证"，不是日常
+    # 迭代增量编译；git pull 后个别场景下增量构建可能不触发重编译，看起来像"拉了新代码但
+    # 跑的还是旧的"，这里直接强制干净重建，用速度换确定性。
+    Info "清空 Debug 配置增量缓存，确保这次是完全重建（避免增量缓存导致的『旧版本』假象）…"
+    & cmake --build (Join-Path $Root "build\msvc") --config Debug --target clean
+    Info "构建 Debug 配置验证链接（干净重建）…"
     & cmake --build (Join-Path $Root "build\msvc") --config Debug -j
     if ($LASTEXITCODE -ne 0) { Err "Debug 构建失败"; Pop-Location; exit 1 }
     Pop-Location
     Ok "已生成：build\msvc\paint_pc.sln（VS 打开，选 Debug 配置开发）"
+    Info "若 VS 已经开着这个 sln：CMake 重新生成工程文件后 VS 通常会弹『重新加载』提示，"
+    Info "点重新加载（或直接关闭重开 sln）；不然 IDE 里可能还在用重生成前的旧工程模型，"
+    Info "点『生成』看着像没生效，其实是 IDE 那份工程状态没跟上，不是代码没编译进去。"
+}
+
+# 打印这次构建对应的 pc/sdk 版本戳，跟运行时窗口标题栏 / Performance 面板里的一致，
+# 用来在命令行里就能确认"这次到底构建的是哪个提交"，不用打开 app 去看。
+function Print-Version {
+    param([string]$Root)
+    Push-Location $Root
+    try {
+        $pcSha = (& git rev-parse --short=7 HEAD 2>$null)
+        if (-not $pcSha) { $pcSha = "unknown" }
+    } finally { Pop-Location }
+    $sdkDir = Join-Path $Root "sdk"
+    $sdkSha = "unknown"
+    if (Test-Path $sdkDir) {
+        Push-Location $sdkDir
+        try {
+            $s = (& git rev-parse --short=7 HEAD 2>$null)
+            if ($s) { $sdkSha = $s }
+        } finally { Pop-Location }
+    }
+    Info "本次构建版本戳：pc $pcSha / sdk $sdkSha（运行时窗口标题栏、Performance 面板里应显示同样的值）"
 }
 
 function Run-Test {
@@ -300,6 +329,8 @@ Sync-Submodule $Root
 if ($Sln) { Build-Sln $Root } else { Build-Pc $Root }
 
 if ($Test) { Run-Test $Root }
+
+Print-Version $Root
 
 if ($Sln) { Info "已生成 VS 解决方案：build\msvc\paint_pc.sln（VS 打开选 Debug 开发）" }
 else { Info "paint-pc 环境就绪。运行: .\build\paint_pc.exe（有显示）/ .\build\paint_pc.exe --headless out.png（离屏）" }
