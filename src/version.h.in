@@ -1,0 +1,19 @@
+#pragma once
+
+// 由 CMake configure_file 在 configure 时生成（见根 CMakeLists.txt），
+// 不要手改本文件——改的是同目录下的 version.h.in 模板。
+//
+// pc  = 消费者（paint-pc 主仓库）当前 HEAD 的 git short sha；
+// sdk = sdk/ submodule 当前 HEAD 的 git short sha；
+// 都取自 configure 那一刻的 git 状态，跟着 setup.sh/ps1 每次先 pull 再 configure 走，
+// 反映"这次构建到底是拉到哪个提交编译的"，用于排查"代码是不是新的"这类问题。
+// 非 git checkout（比如源码包）或 git 不可用时退化为 "unknown"。
+
+namespace paint {
+
+inline constexpr const char* kPcGitSha = "@PAINT_PC_GIT_SHA@";
+inline constexpr bool kPcGitDirty = @PAINT_PC_GIT_DIRTY@;
+inline constexpr const char* kSdkGitSha = "@PAINT_SDK_GIT_SHA@";
+inline constexpr bool kSdkGitDirty = @PAINT_SDK_GIT_DIRTY@;
+
+} // namespace paint

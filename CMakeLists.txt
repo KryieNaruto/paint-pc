@@ -6,6 +6,59 @@ enable_testing()
 # paint-pc：PC UI 消费者（窗口 / 输入 / present 自备）。
 # 外壳期：GLFW + ImGui + OpenGL 清屏。待 SDK B1-4 C API / B2-1 Vulkan 落地后接入。
 
+# --- 版本戳：消费者 + SDK submodule 的 git short sha（见 src/version.h.in）--------
+# 取的是 configure 那一刻的 git 状态；non-git checkout（源码包）/ git 不可用时退化为
+# "unknown"，不阻断构建。
+function(pc_git_short_sha out_var repo_dir)
+  set(${out_var} "unknown" PARENT_SCOPE)
+  find_package(Git QUIET)
+  if(NOT GIT_FOUND OR NOT EXISTS "${repo_dir}/.git")
+    return()
+  endif()
+  execute_process(
+    COMMAND ${GIT_EXECUTABLE} rev-parse --short=7 HEAD
+    WORKING_DIRECTORY ${repo_dir}
+    OUTPUT_VARIABLE sha
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    RESULT_VARIABLE rc
+    ERROR_QUIET
+  )
+  if(rc EQUAL 0 AND sha)
+    set(${out_var} ${sha} PARENT_SCOPE)
+  endif()
+endfunction()
+
+function(pc_git_is_dirty out_var repo_dir)
+  set(${out_var} "false" PARENT_SCOPE)
+  find_package(Git QUIET)
+  if(NOT GIT_FOUND OR NOT EXISTS "${repo_dir}/.git")
+    return()
+  endif()
+  execute_process(
+    COMMAND ${GIT_EXECUTABLE} status --porcelain
+    WORKING_DIRECTORY ${repo_dir}
+    OUTPUT_VARIABLE st
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    RESULT_VARIABLE rc
+    ERROR_QUIET
+  )
+  if(rc EQUAL 0 AND NOT "${st}" STREQUAL "")
+    set(${out_var} "true" PARENT_SCOPE)
+  endif()
+endfunction()
+
+pc_git_short_sha(PAINT_PC_GIT_SHA "${CMAKE_SOURCE_DIR}")
+pc_git_is_dirty(PAINT_PC_GIT_DIRTY "${CMAKE_SOURCE_DIR}")
+pc_git_short_sha(PAINT_SDK_GIT_SHA "${CMAKE_SOURCE_DIR}/sdk")
+pc_git_is_dirty(PAINT_SDK_GIT_DIRTY "${CMAKE_SOURCE_DIR}/sdk")
+message(STATUS "版本戳: pc ${PAINT_PC_GIT_SHA}(dirty=${PAINT_PC_GIT_DIRTY}) / sdk ${PAINT_SDK_GIT_SHA}(dirty=${PAINT_SDK_GIT_DIRTY})")
+
+configure_file(
+  "${CMAKE_SOURCE_DIR}/src/version.h.in"
+  "${CMAKE_BINARY_DIR}/generated/version.h"
+  @ONLY
+)
+
 # --- SDK（git submodule，路径固定 sdk/）--------------------------------------
 # 只 add_subdirectory + 链接 dgc_paint，不 include SDK 内部头。
 add_subdirectory(sdk)
@@ -70,7 +123,7 @@ add_executable(paint_pc
     src/headless.cpp
     src/coords.cpp
 )
-target_include_directories(paint_pc PRIVATE src)
+target_include_directories(paint_pc PRIVATE src "${CMAKE_BINARY_DIR}/generated")
 
 # MSVC 在非 UTF-8 系统代码页（如简体中文 936/GBK）下默认按代码页解释源文件，
 # 源码里的中文字符串字面量（app.cpp 等）会被错误解码，导致 C2001「字符串字面量中的
