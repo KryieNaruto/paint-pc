@@ -3,13 +3,15 @@
 # setup.sh — paint-pc 消费者一键环境搭建脚本（W2，Bash / Linux-WSL / Git Bash）
 #
 # 用法:
-#   scripts/setup.sh            默认（开发）模式：探测 + 补缺指引 + 拉 submodule + 构建
-#   scripts/setup.sh --check    只探测不安装，输出缺项清单
+#   scripts/setup.sh            默认（开发）模式：拉主仓库 + 探测 + 补缺指引 + 拉 submodule + 构建
+#   scripts/setup.sh --check    只探测不安装，输出缺项清单（不拉取）
 #   scripts/setup.sh --test     探测 + 构建 + 跑测试门（tests/smoke.sh）
 #   scripts/setup.sh --sln      生成 VS 解决方案 build/msvc/paint_pc.sln 并构建 Debug（仅 Windows）
 #   scripts/setup.sh --help     打印用法
 #
 # 仓库内自包含：clone paint-pc 后在此仓库内运行即可（SDK 为 submodule）。
+# 非 --check 模式会先 `git pull --ff-only` 主仓库本身，再同步 submodule ——
+# 避免「主仓库代码是旧的，只拉了 submodule/编译了旧代码」这类假阴性排查。
 # 口径来源: docs/env/env-setup.md（E0-1）+ SDK scripts/setup-env.sh / setup-env.ps1。
 # 依赖分级: 硬依赖缺失 → 非零退出并给安装指引；软依赖缺失 → 仅警告。
 # =============================================================================
@@ -331,8 +333,8 @@ print_help() {
   一键搭建 paint-pc 开发/测试环境（仓库内自包含）。
 
 模式:
-  （默认） 探测 + 补缺指引 + 拉 SDK submodule + 构建 paint_pc
-  --check  只探测不安装，输出缺项清单；硬依赖缺失时非零退出
+  （默认） 拉主仓库 + 探测 + 补缺指引 + 拉 SDK submodule + 构建 paint_pc
+  --check  只探测不安装，输出缺项清单（不拉取）；硬依赖缺失时非零退出
   --test   探测 + 构建 + 跑测试门 tests/smoke.sh（headless 离屏 PNG 真实笔迹断言）
   --sln    生成 VS 解决方案 build/msvc/paint_pc.sln 并构建 Debug 验证链接（仅 Windows，需 VS2019/2022/2026）
   --help   打印本帮助
@@ -347,6 +349,27 @@ EOF
 }
 
 # ---------- 动作 ----------
+# 拉主仓库自身最新代码。只用 --ff-only：本地有未提交改动 / 与远端分叉 / detached HEAD /
+# 无追踪分支时 git 会安全拒绝（不 merge、不 rebase、不覆盖本地改动），这里只警告不阻断，
+# 让用户能继续用当前本地代码构建，自己决定何时处理分叉。
+pull_self() {
+  local root="$1"
+  if [ ! -d "$root/.git" ]; then
+    warn "paint-pc 根目录非 git 仓库（缺 .git），跳过主仓库自拉取"
+    return 0
+  fi
+  local branch
+  branch="$(git -C "$root" symbolic-ref --short -q HEAD || true)"
+  if [ -z "$branch" ]; then
+    warn "当前处于 detached HEAD，跳过主仓库 git pull"
+    return 0
+  fi
+  info "拉取 paint-pc 主仓库最新代码（分支 $branch）…"
+  if ! git -C "$root" pull --ff-only; then
+    warn "git pull --ff-only 失败（本地有未提交改动 / 与远端分叉 / 无追踪分支等）；请手动处理后重跑。本次继续用本地现有代码构建。"
+  fi
+}
+
 sync_submodule() {
   local root="$1"
   info "同步 SDK submodule（跟随 paintDemo main 最新）…"
@@ -501,8 +524,10 @@ main() {
   export PY_TEST_NEEDED
 
   if [ "$mode" != "check" ]; then
-    # 先同步 submodule + 拉取三方库（fetch-deps 导出 DGCPAIN_DEPS_ROOT），再探测。
-    # 否则探测在 fetch 之前跑，Vulkan/shaderc 报 MISS → HARD_MISS 拦截，deps 没机会被拉。
+    # 先拉主仓库自身，再同步 submodule + 拉取三方库（fetch-deps 导出 DGCPAIN_DEPS_ROOT），
+    # 最后才探测。否则探测在 fetch 之前跑，Vulkan/shaderc 报 MISS → HARD_MISS 拦截，deps
+    # 没机会被拉；主仓库不先拉的话，编译出来的是本地旧代码，构建成功也可能是"假阴性"。
+    pull_self "$root"
     sync_submodule "$root"
     fetch_deps "$root"
   fi
