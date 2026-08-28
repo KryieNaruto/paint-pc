@@ -484,9 +484,27 @@ build_pc_sln() {
     -DCMAKE_GENERATOR_INSTANCE="$vs_win" \
     -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreadedDLL \
     -DDGCPAIN_BUILD_TESTS=OFF -DDGCPAIN_BUILD_CLI=OFF "${extra[@]}"
-  info "构建 Debug 配置验证链接…"
+  # 先 clean 再 build：VS 增量构建只看时间戳/依赖图，git pull 后个别场景下（比如浅拉取、
+  # 系统时钟/文件系统时间戳异常）可能不触发重编译，看起来像"拉了新代码但跑的还是旧的"。
+  # --sln 模式的定位是"给我一个绝对最新的 Debug 构建去验证"，不是日常迭代增量编译，
+  # 这里直接强制干净重建，用速度换确定性。
+  info "清空 Debug 配置增量缓存，确保这次是完全重建（避免增量缓存导致的『旧版本』假象）…"
+  cmake --build "$root/build/msvc" --config Debug --target clean || true
+  info "构建 Debug 配置验证链接（干净重建）…"
   cmake --build "$root/build/msvc" --config Debug -j
   info "已生成：build/msvc/paint_pc.sln（VS 打开，选 Debug 配置开发）"
+  info "若 VS 已经开着这个 sln：CMake 重新生成工程文件后 VS 通常会弹『重新加载』提示，"
+  info "点重新加载（或直接关闭重开 sln）；不然 IDE 里可能还在用重生成前的旧工程模型，"
+  info "点『生成』看着像没生效，其实是 IDE 那份工程状态没跟上，不是代码没编译进去。"
+}
+
+# 打印这次构建对应的 pc/sdk 版本戳，跟运行时窗口标题栏 / Performance 面板里的一致，
+# 用来在命令行里就能确认"这次到底构建的是哪个提交"，不用打开 app 去看。
+print_version() {
+  local root="$1" pcSha sdkSha
+  pcSha="$(git -C "$root" rev-parse --short=7 HEAD 2>/dev/null || echo unknown)"
+  sdkSha="$(git -C "$root/sdk" rev-parse --short=7 HEAD 2>/dev/null || echo unknown)"
+  info "本次构建版本戳：pc ${pcSha} / sdk ${sdkSha}（运行时窗口标题栏、Performance 面板里应显示同样的值）"
 }
 
 run_test() {
@@ -555,6 +573,8 @@ main() {
   if [ "$mode" = "test" ]; then
     run_test "$root"
   fi
+
+  print_version "$root"
 
   if [ "$mode" = "sln" ]; then
     info "已生成 VS 解决方案：build/msvc/paint_pc.sln（VS 打开选 Debug 开发）"
