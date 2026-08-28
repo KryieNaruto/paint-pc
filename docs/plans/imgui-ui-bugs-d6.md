@@ -281,3 +281,26 @@ vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
 - [ ] Bug4：`ImGuiConfigFlags_DockingEnable` 编译通过 + 运行时断言生效；`v1.90.9-docking` tag 拉取+编译成功。
 - [ ] Bug5：`strokeActive` 切换前后同一控件 `GetCursorScreenPos().y` 差值为 0。
 - [ ] 全部新增回归用例先红后绿记录在案；`ctest` 全绿（paint-pc 侧 + sdk 侧）。
+
+---
+
+## 交付状态（2026-08-27）
+
+**测试门**：100 分全绿通过，2026-08-27 ~21:51 PDT（三次 ctest 的结束时间：paint-pc 21:50 / sdk 21:47 / sdk-hooks 21:51）。
+
+**三种配置 ctest 结果**：
+
+| 配置 | 测试门目录 | 结果 |
+| --- | --- | --- |
+| paint-pc 测试门 | `build-test-gate` | 22/22 通过，0 失败 |
+| sdk 常规测试门 | `sdk/build-test-gate` | 19/19 通过，0 失败 |
+| sdk hooks 测试门（`DGCPAIN_TEST_HOOKS`） | `sdk/build-test-gate-hooks` | 1/1 通过（`test_composite_barrier_repro`：barrier 计数断言 + dab 覆盖不变式断言） |
+
+（三个测试门目录均为本次流水线临时产物，交付前已清理。）
+
+**交付状态**：paint-pc `fix/imgui-ui-bugs` @ f66c96f（含 5 条 UI/渲染 bug 修复 + sdk submodule 指针前移至 f48d2b4）；sdk `fix/dab-composite-barrier` @ f48d2b4（barrier 同步修复 + 测试 CMake 接线）。均未 push。
+
+**遗留项（如实记录）**：
+
+1. **Bug3 的 sync validation layer 实证验证需 Windows/root 机器**：本机（Linux dev box）无 root 权限（`sudo`/`apt-get install` 均失败）且网络不足以完整拉取 LunarG SDK 包，无法用 `VK_LAYER_KHRONOS_validation` + `VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT` 把"连续 dispatch 间缺 barrier"从规范推断坐实为动态检出。需在有 root 的开发机（`apt-get install vulkan-validationlayers`）或用户 Windows 机器上重跑 `diag_hole_repro` / `test_composite_barrier_repro`（`VK_LOADER_LAYERS_ENABLE=*validation` 开启该层）验证是否报出 read-after-write / write-after-write hazard；孔洞现象本身的最终确认同样需要用户在原 Windows 设备复测。
+2. **回归用例先红后绿的红态未录为独立提交**：红态（编译报"未声明标识符"、barrier 计数 0 vs 5 断言失败、布局 y 差值非 0 等）在流水线过程中逐一验证过红→绿，但未作为独立提交留存，仓库最终只含绿态代码；先红后绿证据链见上方各 bug 的"回归用例设计"小节。
