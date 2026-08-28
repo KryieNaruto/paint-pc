@@ -54,8 +54,10 @@ struct App::Impl {
     float wobbleSpeedFloor = 1.31f;
     float minOutputRateHz = 180.0f;
     float endOfStrokeStoppingDistanceMm = 0.1f;
-    float springMassConstant = 400.0f;
-    float springDragConstant = 40.0f;
+    // bugfix Fix B 联动：SDK 弹簧默认值上调（K/m=400→40000、C/m=40→400，ωn=200 rad/s
+    // 临界阻尼，见 core/stroke_predictor.h），此处对齐新默认，避免面板初值偏离 SDK。
+    float springMassConstant = 40000.0f;
+    float springDragConstant = 400.0f;
     float kalmanProcessNoise = 0.0005f;
     float kalmanMeasurementNoise = 0.004f;
     float predictionIntervalMs = 16.0f;
