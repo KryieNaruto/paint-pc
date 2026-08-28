@@ -72,6 +72,14 @@ add_executable(paint_pc
 )
 target_include_directories(paint_pc PRIVATE src)
 
+# MSVC 在非 UTF-8 系统代码页（如简体中文 936/GBK）下默认按代码页解释源文件，
+# 源码里的中文字符串字面量（app.cpp 等）会被错误解码，导致 C2001「字符串字面量中的
+# 换行符」等报错；/utf-8 强制源码 + 执行字符集按 UTF-8 解释，与文件的实际编码一致。
+# GCC/Clang 默认按 UTF-8 读源码，不需要也不识别该选项。
+if(MSVC)
+  target_compile_options(paint_pc PRIVATE /utf-8)
+endif()
+
 # 只链接 dgc_paint 与自备 UI 依赖。不要链接 SDK 内部 target。
 target_link_libraries(paint_pc PRIVATE dgc_paint paint_imgui glfw)
 
@@ -82,4 +90,7 @@ target_link_libraries(paint_pc PRIVATE OpenGL::GL)
 # --- 坐标映射纯函数回归测试（无头可跑，不链接 dgc_paint/GLFW）----------------
 add_executable(paint_pc_coord_test tests/coord_test.cpp src/coords.cpp)
 target_include_directories(paint_pc_coord_test PRIVATE src)
+if(MSVC)
+  target_compile_options(paint_pc_coord_test PRIVATE /utf-8)
+endif()
 add_test(NAME coord_test COMMAND paint_pc_coord_test)

@@ -7,14 +7,15 @@
       1) 探测  VS2026 (MSVC cl.exe) / CMake / Ninja / Vulkan SDK / glslc / python / git；
       2) 补缺  硬依赖缺失给精确安装指引（VS installer / Vulkan SDK 下载器 / git / python），
               软依赖缺失仅警告；
-      3) 拉取  git submodule update --remote（SDK 跟随 paintDemo main 最新，不钉 pin）；
+      3) 拉取  先 git pull --ff-only 主仓库自身，再 git submodule update --remote
+              （SDK 跟随 paintDemo main 最新，不钉 pin）；
       4) 构建  vcvars64 环境内 cmake -B build -G Ninja + cmake --build；
       5) 测试  --test 模式跑 tests/smoke.sh（Git Bash/WSL 内跑，headless 离屏 PNG 真实笔迹断言）；
       6) 生成  -Sln 模式用 CMake VS 生成器产出 build/msvc/paint_pc.sln 并构建 Debug 验证链接。
 
     用法（PowerShell 5.1+ / Core 7+）:
-      .\scripts\setup.ps1              默认（开发）：探测+补缺指引+拉 submodule+构建
-      .\scripts\setup.ps1 --check      只探测不安装，输出缺项清单
+      .\scripts\setup.ps1              默认（开发）：拉主仓库+探测+补缺指引+拉 submodule+构建
+      .\scripts\setup.ps1 --check      只探测不安装，输出缺项清单（不拉取）
       .\scripts\setup.ps1 --test       探测+构建+跑测试门（需 Git Bash 或 WSL 提供 bash）
       .\scripts\setup.ps1 -Sln         生成 VS 解决方案 build\msvc\paint_pc.sln 并构建 Debug
       .\scripts\setup.ps1 -Help        打印本帮助
@@ -191,6 +192,32 @@ function Print-Guidance {
 }
 
 # ---------- 动作 ----------
+# 拉主仓库自身最新代码。只用 --ff-only：本地有未提交改动 / 与远端分叉 / detached HEAD /
+# 无追踪分支时 git 会安全拒绝（不 merge、不 rebase、不覆盖本地改动），这里只警告不阻断，
+# 让用户能继续用当前本地代码构建，自己决定何时处理分叉。
+function Pull-Self {
+    param([string]$Root)
+    if (-not (Test-Path (Join-Path $Root ".git"))) {
+        Warn "paint-pc 根目录非 git 仓库（缺 .git），跳过主仓库自拉取"
+        return
+    }
+    Push-Location $Root
+    try {
+        $branch = (& git symbolic-ref --short -q HEAD)
+        if (-not $branch) {
+            Warn "当前处于 detached HEAD，跳过主仓库 git pull"
+            return
+        }
+        Info "拉取 paint-pc 主仓库最新代码（分支 $branch）…"
+        & git pull --ff-only
+        if ($LASTEXITCODE -ne 0) {
+            Warn "git pull --ff-only 失败（本地有未提交改动 / 与远端分叉 / 无追踪分支等）；请手动处理后重跑。本次继续用本地现有代码构建。"
+        }
+    } finally {
+        Pop-Location
+    }
+}
+
 function Sync-Submodule {
     param([string]$Root)
     Info "同步 SDK submodule（跟随 paintDemo main 最新）…"
@@ -268,6 +295,7 @@ Print-Check
 if ($Check) { if ($script:HardMiss -gt 0) { Print-Guidance; exit 1 }; exit 0 }
 if ($script:HardMiss -gt 0) { Print-Guidance; Err "硬依赖缺失 $($script:HardMiss) 项。请按指引补缺后重跑。"; exit 1 }
 
+Pull-Self $Root
 Sync-Submodule $Root
 if ($Sln) { Build-Sln $Root } else { Build-Pc $Root }
 
