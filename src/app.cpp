@@ -8,6 +8,8 @@
 #include "dgc_paint_c_api.h"
 #include "coords.h"
 #include "gl_canvas.h"
+#include "font_setup.h"
+#include "brush_panel.h"
 #include "version.h"
 
 #include <cstdint>
@@ -68,6 +70,12 @@ struct App::Impl {
         if (rc != DGC_OK) {
             std::fprintf(stderr, "[paint-pc] setBrushSetting(%s): %s\n", label, dgcGetLastError());
         }
+    }
+
+    // 「画笔参数」面板的改参回调适配（面板绘制抽到 brush_panel.cpp，回调接回本类）。
+    static void OnBrushPanelChange(void* user, int settingId, double value, const char* label) {
+        auto* impl = static_cast<Impl*>(user);
+        impl->ApplyBrushSetting(settingId, value, label);
     }
 
     // D6-3：笔刷颜色（straight RGBA，取色器默认黑，与内核默认 ColorH/S/V=0 一致）+
@@ -200,6 +208,14 @@ bool App::init(int width, int height, const char* title) {
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
     ImGui::StyleColorsDark();
+    // Bug 4：docking 能力开关。枚举值只有 docking 分支 tag（PC_IMGUI_TAG=
+    // v1.90.9-docking）编译出的 imgui 才有；release 分支编译会在此报「未声明的
+    // 标识符」（先红后绿的"红"）。只开能力开关，不加 DockSpaceOverViewport。
+    ImGui::GetIO().ConfigFlags |= ImGuiConfigFlags_DockingEnable;
+    // Bug 1+2：DPI 缩放 + 中文字体加载（抽取到 font_setup，headless 可复用）。
+    // 窗口已创建（glfwCreateWindow 在前），可查内容缩放；找不到 CJK 字体时如实
+    // stderr 告警（中文方块，不比现状差），不静默吞掉。
+    LoadUiFonts(ImGui::GetIO(), impl->window);
     ImGui_ImplGlfw_InitForOpenGL(impl->window, true);
     ImGui_ImplOpenGL3_Init("#version 330");
 
@@ -277,52 +293,25 @@ void App::run() {
         // D6-1：画笔参数调试面板——9 个 stroke modeler 滑杆 + 既有 radius/hardness/
         // opacity。改参在 strokeActive==false（两笔画之间）时才下发到 dgcSetBrushSetting
         // （见 Impl::ApplyBrushSetting），滑杆范围取自 SDK docs/brush_settings_mapping.md。
-        ImGui::SetNextWindowPos(ImVec2(12, 100), ImGuiCond_FirstUseEver);
-        ImGui::Begin("画笔参数 (Brush Params)");
-        if (m->strokeActive) {
-            ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.2f, 1.0f), "笔画进行中：改参将在抬笔后生效");
-        }
-        ImGui::SeparatorText("笔刷内核基础参数（存参，暂不作用于默认笔刷）");
-        if (ImGui::SliderFloat("半径 radius", &m->brushRadius, 1.0f, 100.0f)) {
-            m->ApplyBrushSetting(DGC_SETTING_RADIUS, m->brushRadius, "radius");
-        }
-        if (ImGui::SliderFloat("硬度 hardness", &m->brushHardness, 0.0f, 1.0f)) {
-            m->ApplyBrushSetting(DGC_SETTING_HARDNESS, m->brushHardness, "hardness");
-        }
-        if (ImGui::SliderFloat("不透明度 opacity", &m->brushOpacity, 0.0f, 1.0f)) {
-            m->ApplyBrushSetting(DGC_SETTING_OPACITY, m->brushOpacity, "opacity");
-        }
-        ImGui::SeparatorText("Stroke Modeler 参数（改参后笔迹明显变化）");
-        if (ImGui::SliderFloat("抖动消除超时 wobble_timeout_ms", &m->wobbleTimeoutMs, 0.0f, 200.0f)) {
-            m->ApplyBrushSetting(DGC_SETTING_WOBBLE_TIMEOUT_MS, m->wobbleTimeoutMs, "wobble_timeout_ms");
-        }
-        if (ImGui::SliderFloat("抖动消除最低速度 wobble_speed_floor", &m->wobbleSpeedFloor, 0.0f, 10.0f)) {
-            m->ApplyBrushSetting(DGC_SETTING_WOBBLE_SPEED_FLOOR, m->wobbleSpeedFloor, "wobble_speed_floor");
-        }
-        if (ImGui::SliderFloat("最小输出采样率 min_output_rate_hz", &m->minOutputRateHz, 20.0f, 500.0f)) {
-            m->ApplyBrushSetting(DGC_SETTING_MIN_OUTPUT_RATE_HZ, m->minOutputRateHz, "min_output_rate_hz");
-        }
-        if (ImGui::SliderFloat("抬笔停止距离 end_of_stroke_stopping_distance_mm",
-                               &m->endOfStrokeStoppingDistanceMm, 0.01f, 5.0f)) {
-            m->ApplyBrushSetting(DGC_SETTING_END_OF_STROKE_STOPPING_DISTANCE_MM,
-                                  m->endOfStrokeStoppingDistanceMm, "end_of_stroke_stopping_distance_mm");
-        }
-        if (ImGui::SliderFloat("弹簧质量常量 spring_mass_constant", &m->springMassConstant, 10.0f, 2000.0f)) {
-            m->ApplyBrushSetting(DGC_SETTING_SPRING_MASS_CONSTANT, m->springMassConstant, "spring_mass_constant");
-        }
-        if (ImGui::SliderFloat("弹簧阻尼常量 spring_drag_constant", &m->springDragConstant, 1.0f, 200.0f)) {
-            m->ApplyBrushSetting(DGC_SETTING_SPRING_DRAG_CONSTANT, m->springDragConstant, "spring_drag_constant");
-        }
-        if (ImGui::SliderFloat("卡尔曼过程噪声 kalman_process_noise", &m->kalmanProcessNoise, 0.00001f, 0.01f, "%.5f")) {
-            m->ApplyBrushSetting(DGC_SETTING_KALMAN_PROCESS_NOISE, m->kalmanProcessNoise, "kalman_process_noise");
-        }
-        if (ImGui::SliderFloat("卡尔曼测量噪声 kalman_measurement_noise", &m->kalmanMeasurementNoise, 0.0001f, 0.1f, "%.4f")) {
-            m->ApplyBrushSetting(DGC_SETTING_KALMAN_MEASUREMENT_NOISE, m->kalmanMeasurementNoise, "kalman_measurement_noise");
-        }
-        if (ImGui::SliderFloat("预测间隔 prediction_interval_ms", &m->predictionIntervalMs, 0.0f, 100.0f)) {
-            m->ApplyBrushSetting(DGC_SETTING_PREDICTION_INTERVAL_MS, m->predictionIntervalMs, "prediction_interval_ms");
-        }
-        ImGui::End();
+        // 面板绘制抽到 brush_panel.cpp（App::run 与无头布局回归测试共用同一函数，
+        // Bug 5 的 else-Dummy 占位修复就在那里）。
+        BrushPanelParams panel;
+        panel.strokeActive = m->strokeActive;
+        panel.radius = &m->brushRadius;
+        panel.hardness = &m->brushHardness;
+        panel.opacity = &m->brushOpacity;
+        panel.wobbleTimeoutMs = &m->wobbleTimeoutMs;
+        panel.wobbleSpeedFloor = &m->wobbleSpeedFloor;
+        panel.minOutputRateHz = &m->minOutputRateHz;
+        panel.endOfStrokeStoppingDistanceMm = &m->endOfStrokeStoppingDistanceMm;
+        panel.springMassConstant = &m->springMassConstant;
+        panel.springDragConstant = &m->springDragConstant;
+        panel.kalmanProcessNoise = &m->kalmanProcessNoise;
+        panel.kalmanMeasurementNoise = &m->kalmanMeasurementNoise;
+        panel.predictionIntervalMs = &m->predictionIntervalMs;
+        panel.onChange = &Impl::OnBrushPanelChange;
+        panel.user = m;
+        DrawBrushParamsPanel(panel);
 
         // D6-3：显示控制——笔刷颜色 + 垂直同步开关。
         ImGui::SetNextWindowPos(ImVec2(340, 100), ImGuiCond_FirstUseEver);
