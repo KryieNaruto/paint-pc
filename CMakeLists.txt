@@ -59,6 +59,14 @@ configure_file(
   @ONLY
 )
 
+# --- MSVC：M_PI 等 POSIX 数学宏默认不导出（<cmath>/<math.h> 需 _USE_MATH_DEFINES 才定义）---
+# 必须放在 add_subdirectory(sdk) 之前：add_compile_definitions 是目录属性，子目录继承，
+# 让 paint-pc 测试（tests/test_brush_settings_apply.cpp）与 SDK 测试（tests/test_modeler_*.cpp）
+# 一并拿到；与既有 /utf-8 一样是 MSVC 专用，Linux gnu++17 默认自带 M_PI、零影响。
+if(MSVC)
+  add_compile_definitions(_USE_MATH_DEFINES)
+endif()
+
 # --- SDK（git submodule，路径固定 sdk/）--------------------------------------
 # 只 add_subdirectory + 链接 dgc_paint，不 include SDK 内部头。
 add_subdirectory(sdk)
