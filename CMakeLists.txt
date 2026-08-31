@@ -133,6 +133,7 @@ add_executable(paint_pc
     src/font_setup.cpp
     src/brush_panel.cpp
     src/brush_settings.cpp
+    src/canvas_input.cpp
 )
 target_include_directories(paint_pc PRIVATE src "${CMAKE_BINARY_DIR}/generated")
 
@@ -215,3 +216,19 @@ if(MSVC)
   target_compile_options(paint_brush_settings_apply_test PRIVATE /utf-8)
 endif()
 add_test(NAME brush_settings_apply COMMAND paint_brush_settings_apply_test)
+
+# --- bugfix：画布指针 ImGui 捕获门（根因 C）App 层回归测试 ---------------------
+# 无头离屏：经共享指针门控 paint::ShouldHandleCanvasPointer（src/canvas_input.cpp）复刻
+# App OnMouseButton「ImGui 捕获鼠标时不处理指针」逻辑，验证点/拖面板滑杆不再误开笔画
+# （strokeActive 保持 false），改参经 paint::ApplyBrushSetting 真实生效。必须链接 dgc_paint
+# （SDK 渲染实现；其 PUBLIC 传播 sdk_api include），include 另需 src（canvas_input.h /
+# brush_settings.h / coords.h）与 sdk_api（dgc_paint_c_api.h）。
+add_executable(paint_canvas_input_gate_test tests/test_canvas_input_gate.cpp
+    src/canvas_input.cpp src/brush_settings.cpp src/coords.cpp)
+target_include_directories(paint_canvas_input_gate_test PRIVATE src
+    "${CMAKE_SOURCE_DIR}/sdk/sdk_api")
+target_link_libraries(paint_canvas_input_gate_test PRIVATE dgc_paint)
+if(MSVC)
+  target_compile_options(paint_canvas_input_gate_test PRIVATE /utf-8)
+endif()
+add_test(NAME canvas_input_gate COMMAND paint_canvas_input_gate_test)

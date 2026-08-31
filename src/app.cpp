@@ -6,6 +6,7 @@
 #include <imgui_impl_opengl3.h>
 
 #include "dgc_paint_c_api.h"
+#include "canvas_input.h"
 #include "coords.h"
 #include "gl_canvas.h"
 #include "font_setup.h"
@@ -92,6 +93,14 @@ struct App::Impl {
         auto* impl = static_cast<Impl*>(glfwGetWindowUserPointer(window));
         if (!impl || !impl->sdk) return;
         if (button == GLFW_MOUSE_BUTTON_LEFT) {
+            // ImGui 面板捕获鼠标（光标悬停在面板/控件上）时按下不开始画布笔画：否则点/拖
+            // 面板滑杆会误开笔画（strokeActive=true），且改参回调经 paint::ApplyBrushSetting
+            // 命中 strokeActive 门被静默丢弃 →「画笔大小/硬度/透明度设置无效」（根因 C，见
+            // src/canvas_input.h）。与 OnScroll 的 WantCaptureMouse 判断同一约定。抬笔不受
+            // 门控：画布上已开始的笔画即使拖到面板上抬笔也必须 dgcEndStroke 正常结束。
+            if (action == GLFW_PRESS && !paint::ShouldHandleCanvasPointer(ImGui::GetIO().WantCaptureMouse)) {
+                return;
+            }
             double x, y; glfwGetCursorPos(window, &x, &y);
             // 窗口内容坐标 → 画布像素坐标：非默认分辨率（DPI 缩放 !=1）下 content != canvas，必须按比例换算；
             // 叠加 zoom 逆映射（D6-2），保证缩放态下画笔落点与光标一致。
