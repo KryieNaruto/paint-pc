@@ -7,6 +7,8 @@
 #   scripts/setup.sh --check    只探测不安装，输出缺项清单（不拉取）
 #   scripts/setup.sh --test     探测 + 构建 + 跑测试门（tests/smoke.sh）
 #   scripts/setup.sh --sln      生成 VS 解决方案 build/msvc/paint_pc.sln 并构建 Debug（仅 Windows）
+#   scripts/setup.sh --auto-install  硬缺项时尝试自动安装（Ninja/Vulkan；直下走国内镜像）
+#   scripts/setup.sh --yes      配合 --auto-install 跳过 y/N 确认（Windows 装 Vulkan 仍弹 UAC）
 #   scripts/setup.sh --help     打印用法
 #
 # 仓库内自包含：clone paint-pc 后在此仓库内运行即可（SDK 为 submodule）。
@@ -60,6 +62,7 @@ ver_ge() {
 # ---------- 探测结果存储 ----------
 CHK_NAMES=(); CHK_LEVELS=(); CHK_STATUS=(); CHK_DETAILS=()
 HARD_MISS=0; SOFT_MISS=0
+AUTO_INSTALL=0; YES=0
 record() { CHK_NAMES+=("$1"); CHK_LEVELS+=("$2"); CHK_STATUS+=("$3"); CHK_DETAILS+=("$4"); }
 
 # ---------- 各检查项 ----------
@@ -248,10 +251,11 @@ probe_compiler() {
 probe_vulkan() {
   # paint-pc 离屏渲染走真实 VkBackend → Vulkan 对构建/验证是硬依赖。
   # 探测「编译能力」：VULKAN_SDK（Windows/LunarG）→ pkg-config vulkan → vulkan/vulkan.h 头 →
-  # deps root。注意 ldconfig 里的 libvulkan.so.1 是运行时 mesa 驱动，不是编译头/库，不能当判据。
+  # deps root → LunarG 默认安装路径（Windows）。注意 ldconfig 里的 libvulkan.so.1 是运行时 mesa
+  # 驱动，不是编译头/库，不能当判据。
   local vsdk="${VULKAN_SDK:-}"
   local deps="${DGCPAIN_DEPS_ROOT:-}"
-  local found=""
+  local vsdk_win="" found=""
   if [ -n "$vsdk" ] && [ -d "$vsdk" ]; then
     found="VULKAN_SDK=$vsdk"
   elif is_linux && pkg-config --exists vulkan 2>/dev/null; then
@@ -260,6 +264,12 @@ probe_vulkan() {
     found="/usr/include/vulkan/vulkan.h"
   elif is_linux && [ -n "$deps" ] && { [ -f "$deps/include/vulkan/vulkan.h" ] || [ -f "$deps/lib/libvulkan.so" ] || ls "$deps"/lib/*/libvulkan.so >/dev/null 2>&1; }; then
     found="DGCPAIN_DEPS_ROOT=$deps"
+  elif ! is_linux && vsdk_win="$(find_vulkan_sdk_win)"; then
+    # winget/LunarG 安装器装完后 VULKAN_SDK 环境变量不回传当前 shell → 主动认默认安装路径
+    # C:/VulkanSDK/<版本> 并 export（构建阶段 CMake 找头/库、MSVC bat 注入 Bin 都依赖它）。
+    # 顺带让「装了 SDK 但没设环境变量」的存量用户也被自动识别。
+    export VULKAN_SDK="$vsdk_win"
+    found="VULKAN_SDK=$vsdk_win（LunarG 默认安装路径）"
   fi
   if [ -n "$found" ]; then
     record "Vulkan" "硬" "OK" "$found"
@@ -328,7 +338,7 @@ print_guidance() {
 
 print_help() {
   cat <<'EOF'
-用法: scripts/setup.sh [--check|--test|--sln|--help]
+用法: scripts/setup.sh [--check|--test|--sln] [--auto-install] [--yes|-y|--help]
 
   一键搭建 paint-pc 开发/测试环境（仓库内自包含）。
 
@@ -337,11 +347,18 @@ print_help() {
   --check  只探测不安装，输出缺项清单（不拉取）；硬依赖缺失时非零退出
   --test   探测 + 构建 + 跑测试门 tests/smoke.sh（headless 离屏 PNG 真实笔迹断言）
   --sln    生成 VS 解决方案 build/msvc/paint_pc.sln 并构建 Debug 验证链接（仅 Windows，需 VS2019/2022/2026）
+  --auto-install
+           硬依赖缺失时尝试自动安装可装项，装完重新探测，仍缺才给指引退出；
+           安装前默认 y/N 确认。Ninja 直下走国内镜像（ghproxy 前缀，PC_FETCH_MIRROR /
+           PC_NINJA_URL 可覆盖）；Vulkan 在 Windows 经 winget 装 LunarG SDK（约 500MB、
+           弹 UAC；sdk.lunarg.com 国内直连可达、无镜像承载）、Linux 走包管理器
+  --yes    （-y）配合 --auto-install 跳过 y/N 确认（Windows 装 Vulkan SDK 仍会弹一次 UAC 提权）
   --help   打印本帮助
 
 无人值守: 假定 VS2026（含「使用 C++ 的桌面开发」）已装；Windows 下自动用 vswhere 定位
   VS 并经 vcvars64 进入 MSVC 环境构建，不要求 cl 在 PATH。python 在默认/开发模式为软依赖，
-  仅 --test 需要（smoke.sh 解码 PNG）。真缺硬依赖（如未装 VS）时给出指引并非零退出。
+  仅 --test 需要（smoke.sh 解码 PNG）。真缺硬依赖时默认给出指引并非零退出；加 --auto-install
+  可自动装 Ninja/Vulkan（VS2026 等大件仍需手动装）。
 
 依赖: CMake≥3.22 / Ninja / C++ 编译器（g++≥11 或 MSVC）/ Vulkan（真实后端）/ python3（--test）/ git。
 口径来源: SDK docs/env/env-setup.md。
@@ -513,19 +530,193 @@ run_test() {
   (cd "$root" && bash tests/smoke.sh)
 }
 
+# ---------- 自动安装（--auto-install） ----------
+# winget 装完 PATH/环境变量不回传当前 shell；以下两个定位函数让本进程装完立刻能探测到。
+
+# 定位 winget 包安装目录：%LOCALAPPDATA%\Microsoft\WinGet\Packages\<ID>_<source>_<hash>/。
+# 返回含目标文件（如 ninja.exe）的目录；找不到返回空。LOCALAPPDATA 在 Git Bash 里是 C:\
+# 反斜杠形式，先经 msys_from_win 转 /c/ 才能 [ -f ] 测（对无盘符路径原样放行，便于测试注入）。
+find_winget_package_dir() {
+  local id="$1" target="$2" base dir
+  base="${LOCALAPPDATA:-}"
+  [ -n "$base" ] || return 1
+  base="$(msys_from_win "$base")/Microsoft/WinGet/Packages"
+  [ -d "$base" ] || return 1
+  for dir in "$base/${id}"_*/; do
+    [ -d "$dir" ] || continue
+    if [ -f "$dir/$target" ]; then printf '%s' "$dir"; return 0; fi
+  done
+  return 1
+}
+
+# 定位 LunarG Vulkan SDK 默认安装路径：C:/VulkanSDK/<最新版本>/（含 Include/vulkan/vulkan.h）。
+# 版本号按数字分段比大小取最新（1.3.280 > 1.3.99）。VULKAN_SDK_DEFAULT_DIR 仅供测试注入。
+find_vulkan_sdk_win() {
+  local base="${VULKAN_SDK_DEFAULT_DIR:-/c/VulkanSDK}"
+  local d v latest=""
+  [ -d "$base" ] || return 1
+  for d in "$base"/*/; do
+    [ -f "$d/Include/vulkan/vulkan.h" ] || continue
+    v="$(basename "$d")"; v="${v#v}"
+    if [ -z "$latest" ] || ver_ge "$v" "$latest"; then latest="$v"; fi
+  done
+  [ -n "$latest" ] || return 1
+  printf '%s/%s' "$base" "$latest"
+}
+
+# Linux 包管理器命令前缀：root 直接跑，非 root 走 sudo（CI/无 sudo 时 sudo 失败 → 安装失败 → 指引）。
+run_root() { if [ "$(id -u)" -eq 0 ]; then "$@"; else sudo "$@"; fi; }
+
+pkg_install() {
+  # 用已装的包管理器安装一批包；失败返回非零。apt 先静默 update 一次（首次源列表可能为空/旧）。
+  if has apt-get; then
+    run_root apt-get update -y >/dev/null 2>&1 || true
+    run_root apt-get install -y "$@"
+  elif has dnf; then
+    run_root dnf install -y "$@"
+  elif has pacman; then
+    run_root pacman -S --noconfirm "$@"
+  elif has zypper; then
+    run_root zypper --non-interactive install "$@"
+  else
+    warn "未识别的 Linux 包管理器（需 apt-get/dnf/pacman/zypper）"
+    return 1
+  fi
+}
+
+# 该依赖是否可自动安装（VS2026 等大件不可自动装，保持指引）。
+installable_dep() {
+  case "$1" in
+    Ninja|Vulkan) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+install_desc() {
+  case "$1" in
+    Ninja)  echo "Ninja 构建系统（国内镜像直下 / winget / Linux 包管理器，约 2MB）" ;;
+    Vulkan) echo "Vulkan SDK（Windows 经 winget 装 LunarG，约 500MB、弹 UAC；Linux 为 libvulkan-dev）" ;;
+  esac
+}
+
+install_ninja() {
+  local root="$1" dir url tools
+  if is_linux; then
+    pkg_install ninja-build || return 1
+    hash -r
+    return 0
+  fi
+  # Windows：国内镜像直下 ninja-win.zip 到仓库内 tools/ninja/（无需管理员，跟随 fetch-deps 的
+  # 『仓库内自包含 + 国内镜像』风格，同 CMakeLists PC_FETCH_MIRROR=ghproxy 前缀约定；
+  # PC_FETCH_MIRROR / PC_NINJA_URL 可覆盖）。镜像失败才退回 winget（官方包源，下载源为
+  # GitHub，仅作兜底）。
+  tools="$root/tools/ninja"
+  url="${PC_NINJA_URL:-${PC_FETCH_MIRROR:-https://ghproxy.com/}https://github.com/ninja-build/ninja/releases/download/v1.12.1/ninja-win.zip}"
+  mkdir -p "$tools"
+  if curl -fSL --connect-timeout 15 "$url" -o "$tools/ninja-win.zip" \
+    && (cd "$tools" && unzip -o ninja-win.zip >/dev/null 2>&1); then
+    rm -f "$tools/ninja-win.zip"
+    export PATH="$tools:$PATH"
+    hash -r
+    info "Ninja 已装于 $tools（国内镜像直下，已加入本进程 PATH）"
+    return 0
+  fi
+  rm -f "$tools/ninja-win.zip"
+  warn "国内镜像直下 Ninja 失败（镜像源: $url）；退回 winget…"
+  if has winget; then
+    info "winget 安装 Ninja（Ninja-build.Ninja）…"
+    if winget install -e --id Ninja-build.Ninja --silent --accept-package-agreements --accept-source-agreements; then
+      if dir="$(find_winget_package_dir "Ninja-build.Ninja" "ninja.exe")"; then
+        export PATH="$dir:$PATH"
+        hash -r
+        info "Ninja 已装于 $dir（已加入本进程 PATH）"
+        return 0
+      fi
+      warn "winget 报告安装成功但未在包目录定位到 ninja.exe"
+    fi
+  else
+    warn "winget 不可用"
+  fi
+  warn "Ninja 自动安装失败（镜像 + winget 均失败；可用 PC_NINJA_URL 指定可用镜像后重跑）"
+  return 1
+}
+
+install_vulkan() {
+  local root="$1" sdk
+  if is_linux; then
+    pkg_install libvulkan-dev || return 1
+    return 0
+  fi
+  # Windows：winget 装 LunarG Vulkan SDK。整个 SDK 没有国内镜像承载（deps 规范
+  # 2026-08-25 亦注明 Windows 侧『探测已装即用 + LunarG 指引』的务实取舍），但 sdk.lunarg.com
+  # 国内直连可达（非 GitHub 下载），winget 是可自动化的最稳路径——这里是 --auto-install 的
+  # 显式 opt-in，默认流程仍保持探测+指引。装完 VULKAN_SDK 不回传本进程 → 定位默认路径并
+  # export，probe_vulkan 与构建（CMake 找头/库 + MSVC bat 注入 Bin）才能立刻拿到。
+  if ! has winget; then
+    warn "winget 不可用，无法自动安装 Vulkan SDK（请手动装 LunarG Vulkan SDK 或设 VULKAN_SDK）"
+    return 1
+  fi
+  info "winget 安装 Vulkan SDK（KhronosGroup.VulkanSDK，约 500MB，会弹 UAC 提权确认）…"
+  if ! winget install -e --id KhronosGroup.VulkanSDK --silent --accept-package-agreements --accept-source-agreements; then
+    warn "winget 安装 Vulkan SDK 失败（winget 源需可达；否则请手动装 LunarG Vulkan SDK）"
+    return 1
+  fi
+  if sdk="$(find_vulkan_sdk_win)"; then
+    export VULKAN_SDK="$sdk"
+    info "Vulkan SDK 已装于 $sdk（VULKAN_SDK 已 export 给本进程）"
+    return 0
+  fi
+  warn "Vulkan SDK 已装但未在 C:/VulkanSDK 定位到版本目录（确认安装位置后重跑）"
+  return 1
+}
+
+# 汇总当前硬缺失且可自动安装的项 → 确认 → 逐个安装 → 重新探测。
+auto_install() {
+  local root="$1" i name todo=()
+  for i in "${!CHK_NAMES[@]}"; do
+    if [ "${CHK_STATUS[$i]}" = "MISS(硬)" ] && installable_dep "${CHK_NAMES[$i]}"; then
+      todo+=("${CHK_NAMES[$i]}")
+    fi
+  done
+  if [ "${#todo[@]}" -eq 0 ]; then
+    warn "没有可自动安装的缺项（VS2026 等需手动补装）。"
+    return 0
+  fi
+  if [ "$YES" != "1" ]; then
+    info "检测到可自动安装的硬依赖缺失："
+    for name in "${todo[@]}"; do info "  - $name: $(install_desc "$name")"; done
+    printf '自动安装以上依赖（Windows 装 Vulkan SDK 会弹 UAC 提权）？[y/N] '
+    local ans=""; read -r ans || ans=""
+    case "$ans" in
+      y|Y|yes|YES) ;;
+      *) info "已取消自动安装，按指引手动补装。"; return 0 ;;
+    esac
+  fi
+  for name in "${todo[@]}"; do
+    case "$name" in
+      Ninja)  install_ninja "$root"  && info "Ninja 自动安装完成"  || warn "Ninja 自动安装失败（保留原指引）" ;;
+      Vulkan) install_vulkan "$root" && info "Vulkan SDK 自动安装完成" || warn "Vulkan SDK 自动安装失败（保留原指引）" ;;
+    esac
+  done
+  info "重新探测环境…"
+  probe_all
+  print_check
+}
+
 # ---------- 主流程 ----------
 main() {
-  local mode="dev"
-  if [ "$#" -gt 1 ]; then err "参数过多：$*（用法: setup.sh [--check|--test|--sln]）"; exit 2; fi
-  if [ "$#" -eq 1 ]; then
-    case "$1" in
+  local mode="dev" a
+  AUTO_INSTALL=0; YES=0
+  for a in "$@"; do
+    case "$a" in
       --check) mode="check" ;;
       --test)  mode="test" ;;
       --sln)   mode="sln" ;;
+      --auto-install) AUTO_INSTALL=1 ;;
+      --yes|-y) YES=1 ;;
       -h|--help) print_help; exit 0 ;;
-      *) err "未知参数：$1"; exit 2 ;;
+      *) err "未知参数：$a（用法: setup.sh [--check|--test|--sln] [--auto-install] [--yes|-y]）"; exit 2 ;;
     esac
-  fi
+  done
 
   local root
   root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -554,14 +745,28 @@ main() {
   print_check
 
   if [ "$mode" = "check" ]; then
+    # --check 语义是「只探测不安装」；配 --auto-install 时额外尝试自动补装（装完重探测）。
+    if [ "$AUTO_INSTALL" = "1" ] && [ "$HARD_MISS" -gt 0 ]; then
+      auto_install "$root"
+    fi
     [ "$HARD_MISS" -gt 0 ] && { print_guidance; exit 1; }
     exit 0
   fi
 
   if [ "$HARD_MISS" -gt 0 ]; then
-    print_guidance
-    err "硬依赖缺失 $HARD_MISS 项。脚本假定 VS2026 / 编译工具已装（Windows 用 MSVC 自动定位、Linux 用 g++）；对真缺项请按指引补装后重跑（无人值守，不做静默安装）。"
-    exit 1
+    if [ "$AUTO_INSTALL" = "1" ]; then
+      auto_install "$root"
+    else
+      print_guidance
+      err "硬依赖缺失 $HARD_MISS 项。脚本假定 VS2026 / 编译工具已装（Windows 用 MSVC 自动定位、Linux 用 g++）；对真缺项请按指引补装后重跑，或用 --auto-install 尝试自动安装（无人值守，默认不做静默安装）。"
+      exit 1
+    fi
+    # 自动安装后仍缺（含不可自动装的项，如缺 VS2026）→ 指引退出。
+    if [ "$HARD_MISS" -gt 0 ]; then
+      print_guidance
+      err "自动安装后仍有 $HARD_MISS 项硬依赖缺失（不可自动装的部分请手动补装）。"
+      exit 1
+    fi
   fi
 
   if [ "$mode" = "sln" ]; then
