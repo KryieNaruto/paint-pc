@@ -132,6 +132,7 @@ add_executable(paint_pc
     src/coords.cpp
     src/font_setup.cpp
     src/brush_panel.cpp
+    src/brush_settings.cpp
 )
 target_include_directories(paint_pc PRIVATE src "${CMAKE_BINARY_DIR}/generated")
 
@@ -200,3 +201,17 @@ if(MSVC)
   target_compile_options(paint_brush_panel_layout_test PRIVATE /utf-8)
 endif()
 add_test(NAME brush_panel_layout COMMAND paint_brush_panel_layout_test)
+
+# --- bugfix：画笔设置（粗细/硬度/透明度）+ modeler 参数 App 消费端回归测试 ----------
+# 无头离屏：经 App 共享设置入口 paint::ApplyBrushSetting（src/brush_settings.cpp）下发，
+# 验证「面板改参必须真实改变渲染输出」（根因 B：设置下发到 dgcCreateBrush 发号器句柄而非
+# DGC_DEFAULT_BRUSH 会被内核静默 no-op）。必须链接 dgc_paint（SDK 渲染实现；其 PUBLIC 传播
+# sdk_api include），include 另需 src（brush_settings.h）与 sdk_api（dgc_paint_c_api.h）。
+add_executable(paint_brush_settings_apply_test tests/test_brush_settings_apply.cpp src/brush_settings.cpp)
+target_include_directories(paint_brush_settings_apply_test PRIVATE src
+    "${CMAKE_SOURCE_DIR}/sdk/sdk_api")
+target_link_libraries(paint_brush_settings_apply_test PRIVATE dgc_paint)
+if(MSVC)
+  target_compile_options(paint_brush_settings_apply_test PRIVATE /utf-8)
+endif()
+add_test(NAME brush_settings_apply COMMAND paint_brush_settings_apply_test)

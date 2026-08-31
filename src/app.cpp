@@ -10,6 +10,7 @@
 #include "gl_canvas.h"
 #include "font_setup.h"
 #include "brush_panel.h"
+#include "brush_settings.h"
 #include "version.h"
 
 #include <cstdint>
@@ -38,11 +39,8 @@ struct App::Impl {
     double lastReadMs = 0.0;          // 读回耗时
     bool strokeActive = false;
 
-    // D6-1：调试面板「画笔参数」——有效笔刷句柄（init() 里 dgcCreateBrush 一次拿到，
-    // 仅做发号器校验用，不切换/加载具体笔刷，见 SDK docs/brush_settings_mapping.md）。
-    DgcBrush brush = DGC_INVALID_BRUSH;
-
-    // 笔刷内核基础参数（settingId 0-2，当前仅存参、不作用于默认笔刷渲染，滑杆仍保留）。
+    // 笔刷内核基础参数（settingId 0-2，经 paint::ApplyBrushSetting 下发到 DGC_DEFAULT_BRUSH，
+    // 见 src/brush_settings.cpp；滑杆初值取自 SDK docs/brush_settings_mapping.md）。
     float brushRadius = 20.0f;
     float brushHardness = 0.8f;
     float brushOpacity = 1.0f;
@@ -62,16 +60,13 @@ struct App::Impl {
     float kalmanMeasurementNoise = 0.004f;
     float predictionIntervalMs = 16.0f;
 
-    // 面板改参统一入口：strokeActive==true（笔画进行中）时不下发，避免笔画中途改参
-    // 只影响后续点、不回溯当前笔画（见 SDK plan D6-1 风险 R7 的生产约定）。
-    void ApplyBrushSetting(int settingId, double value, const char* label) {
-        if (strokeActive || brush == DGC_INVALID_BRUSH) {
-            return;
-        }
-        int rc = dgcSetBrushSetting(sdk, brush, settingId, value);
-        if (rc != DGC_OK) {
-            std::fprintf(stderr, "[paint-pc] setBrushSetting(%s): %s\n", label, dgcGetLastError());
-        }
+    // 面板改参统一入口：委托共享函数 paint::ApplyBrushSetting（src/brush_settings.cpp）。
+    // 设置固定下发 DGC_DEFAULT_BRUSH（内核基础参数只对内核已建默认笔刷生效；dgcCreateBrush
+    // 发号器句柄非 1 会被内核静默 no-op，是「画笔设置无效」bug 的根因 B）。
+    // strokeActive==true（笔画进行中）时不下发，避免笔画中途改参只影响后续点、
+    // 不回溯当前笔画（见 SDK plan D6-1 风险 R7 的生产约定）。
+    int ApplyBrushSetting(int settingId, double value, const char* label) {
+        return paint::ApplyBrushSetting(sdk, strokeActive, settingId, value, label);
     }
 
     // 「画笔参数」面板的改参回调适配（面板绘制抽到 brush_panel.cpp，回调接回本类）。
@@ -235,12 +230,9 @@ bool App::init(int width, int height, const char* title) {
     impl->rgba.assign((size_t)impl->canvasW * impl->canvasH * 4, 255);
     impl->canvas = new GlCanvas(impl->canvasW, impl->canvasH);
 
-    // D6-1：拿一个有效笔刷句柄供「画笔参数」调试面板的 dgcSetBrushSetting 调用
-    // （句柄仅做发号器校验，不切换/加载具体笔刷，见 SDK B1-4/D6-1 说明）。
-    impl->brush = dgcCreateBrush(impl->sdk, nullptr);
-    if (impl->brush == DGC_INVALID_BRUSH) {
-        std::fprintf(stderr, "[paint-pc] createBrush: %s\n", dgcGetLastError());
-    }
+    // 画笔参数设置不再依赖 dgcCreateBrush 发号器句柄：paint::ApplyBrushSetting 统一走
+    // DGC_DEFAULT_BRUSH（见 src/brush_settings.cpp）。init 不再创建笔刷，避免把
+    // 「句柄值巧合=1」的隐式依赖埋进 App 侧（根因 B）。
 
     return true;
 }
@@ -293,8 +285,10 @@ void App::run() {
         ImGui::End();
 
         // D6-1：画笔参数调试面板——9 个 stroke modeler 滑杆 + 既有 radius/hardness/
-        // opacity。改参在 strokeActive==false（两笔画之间）时才下发到 dgcSetBrushSetting
-        // （见 Impl::ApplyBrushSetting），滑杆范围取自 SDK docs/brush_settings_mapping.md。
+        // opacity。改参在 strokeActive==false（两笔画之间）时才经 Impl::ApplyBrushSetting →
+        // paint::ApplyBrushSetting（src/brush_settings.cpp）下发，统一走 DGC_DEFAULT_BRUSH
+        // （不依赖 dgcCreateBrush 发号器句柄，见根因 B 修复）。滑杆范围取自
+        // SDK docs/brush_settings_mapping.md。
         // 面板绘制抽到 brush_panel.cpp（App::run 与无头布局回归测试共用同一函数，
         // Bug 5 的 else-Dummy 占位修复就在那里）。
         BrushPanelParams panel;
