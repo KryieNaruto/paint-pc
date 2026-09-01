@@ -63,6 +63,7 @@ ver_ge() {
 CHK_NAMES=(); CHK_LEVELS=(); CHK_STATUS=(); CHK_DETAILS=()
 HARD_MISS=0; SOFT_MISS=0
 AUTO_INSTALL=0; YES=0
+NINJA_LEVEL=硬   # 默认/开发模式 -G Ninja 构建必需（硬）；--sln 用 VS 生成器不需要 ninja（软）
 record() { CHK_NAMES+=("$1"); CHK_LEVELS+=("$2"); CHK_STATUS+=("$3"); CHK_DETAILS+=("$4"); }
 
 # ---------- 各检查项 ----------
@@ -79,10 +80,29 @@ probe_cmake() {
 }
 
 probe_ninja() {
-  if ! has ninja; then
-    record "Ninja" "硬" "MISS(硬)" "未安装（build 必败）"; HARD_MISS=$((HARD_MISS+1)); return
+  local level="${NINJA_LEVEL:-硬}"
+  if has ninja; then
+    record "Ninja" "$level" "OK" "ninja $(ninja --version 2>/dev/null | head -n1 || true)"
+    return
   fi
-  record "Ninja" "硬" "OK" "ninja $(ninja --version 2>/dev/null | head -n1 || true)"
+  # Windows：VS 自带 ninja 不在 PATH（VS 的 CMake 集成内部使用）→ 自动定位并加入本进程 PATH，
+  # 构建（-G Ninja）才找得到；同 probe_vulkan 认 LunarG 默认路径的『自动识别已装』思路。
+  # --sln 用 VS 生成器（MSBuild）本不需要 ninja → NINJA_LEVEL=软 仅提示，不阻断。
+  if ! is_linux; then
+    local n dir
+    if n="$(find_vs_ninja)"; then
+      dir="$(dirname "$n")"
+      export PATH="$dir:$PATH"
+      hash -r
+      record "Ninja" "$level" "OK" "ninja $(ninja --version 2>/dev/null | head -n1 || true)（VS 自带，自动定位 @ $dir）"
+      return
+    fi
+  fi
+  if [ "$level" = "硬" ]; then
+    record "Ninja" "硬" "MISS(硬)" "未安装（build 必败）"; HARD_MISS=$((HARD_MISS+1))
+  else
+    record "Ninja" "软" "WARN(软)" "未安装（--sln 的 VS 生成器不需要 ninja，仅提示）"; SOFT_MISS=$((SOFT_MISS+1))
+  fi
 }
 
 # ── Windows/VS 定位辅助（全自动无人值守；假定用户已装 VS2026）──────────────
@@ -173,6 +193,21 @@ find_vcvars() {
   # fallback：直接扫 VS 目录下的 vcvars64.bat（兼容 Insiders/自定义布局）。
   vc="$(find "/c/Program Files/Microsoft Visual Studio" -path '*VC/Auxiliary/Build/vcvars64.bat' -type f 2>/dev/null | head -n1)"
   [ -n "$vc" ] && { printf '%s' "$vc"; return 0; }
+  return 1
+}
+
+# 找 VS 自带的 ninja（「C++ CMake tools for Windows」组件）。VS 的 ninja 不在 PATH（只给 VS 内部
+# CMake 集成用），构建 -G Ninja 时需手动定位；--sln（VS 生成器）不需要。路径稳定：
+# <VS>/Common7/IDE/CommonExtensions/Microsoft/CMake/Ninja/ninja.exe。
+find_vs_ninja() {
+  local vs="" n=""
+  vs="$(find_vs 2>/dev/null || true)"
+  if [ -n "$vs" ]; then
+    n="$vs/Common7/IDE/CommonExtensions/Microsoft/CMake/Ninja/ninja.exe"
+    [ -f "$n" ] && { printf '%s' "$n"; return 0; }
+  fi
+  n="$(find "/c/Program Files/Microsoft Visual Studio" -path '*Common7/IDE/CommonExtensions/Microsoft/CMake/Ninja/ninja.exe' -type f 2>/dev/null | head -n1)"
+  [ -n "$n" ] && { printf '%s' "$n"; return 0; }
   return 1
 }
 
@@ -333,6 +368,7 @@ print_guidance() {
   info "  - Linux:  sudo apt install build-essential cmake ninja-build libvulkan-dev python3"
   info "  - Windows: VS2026 + 「使用 C++ 的桌面开发」+「C++ CMake tools」；LunarG Vulkan SDK（https://vulkan.lunarg.com/）设 \$env:VULKAN_SDK；git"
   info "  - 脚本在 Windows 下自动定位 VS2026（vswhere）并经 vcvars64 进入 MSVC 环境，无需 cl 在 PATH。"
+  info "  - Ninja 随 VS「C++ CMake tools」组件提供（不进 PATH），脚本会自动定位 VS 自带 ninja 并加入本进程 PATH；--sln 用 VS 生成器不需要 ninja。"
   info "  - 也可用同仓库 scripts/setup.ps1（Windows PowerShell 原生）。"
 }
 
@@ -356,9 +392,10 @@ print_help() {
   --help   打印本帮助
 
 无人值守: 假定 VS2026（含「使用 C++ 的桌面开发」）已装；Windows 下自动用 vswhere 定位
-  VS 并经 vcvars64 进入 MSVC 环境构建，不要求 cl 在 PATH。python 在默认/开发模式为软依赖，
-  仅 --test 需要（smoke.sh 解码 PNG）。真缺硬依赖时默认给出指引并非零退出；加 --auto-install
-  可自动装 Ninja/Vulkan（VS2026 等大件仍需手动装）。
+  VS 并经 vcvars64 进入 MSVC 环境构建，不要求 cl 在 PATH。Ninja 同理：自动认 VS 自带的 ninja
+  （「C++ CMake tools」组件）并加入本进程 PATH；--sln 用 VS 生成器本不需要 ninja，缺失仅提示。
+  python 在默认/开发模式为软依赖，仅 --test 需要（smoke.sh 解码 PNG）。真缺硬依赖时默认给出
+  指引并非零退出；加 --auto-install 可自动装 Ninja/Vulkan（VS2026 等大件仍需手动装）。
 
 依赖: CMake≥3.22 / Ninja / C++ 编译器（g++≥11 或 MSVC）/ Vulkan（真实后端）/ python3（--test）/ git。
 口径来源: SDK docs/env/env-setup.md。
@@ -740,6 +777,11 @@ main() {
     sync_submodule "$root"
     fetch_deps "$root"
   fi
+
+  # ninja 依赖分级：默认/开发模式用 -G Ninja 构建 → 必需（硬）；--sln 用 VS 生成器（MSBuild）
+  # 构建，不需要 ninja → 软（缺失仅提示）。Windows 下 PATH 无 ninja 时自动认 VS 自带 ninja。
+  NINJA_LEVEL="硬"; [ "$mode" = "sln" ] && NINJA_LEVEL="软"
+  export NINJA_LEVEL
 
   probe_all
   print_check
